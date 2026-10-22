@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upnote-api"
+version = "0.1.0"
+description = "Full REST API and CLI for interacting with the local UpNote SQLite store and Electron x-callback-url deep-link interface on Linux."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Russell Milliner", email = "russell.milliner@gmail.com" }
+]
+keywords = ["upnote", "fastapi", "rest-api", "sqlite", "notes", "linux", "systemd"]
+dependencies = [
+  "fastapi>=0.110.0",
+  "uvicorn>=0.27.0",
+  "pydantic>=2.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/russellmilliner/upnote-api"
+Repository = "https://github.com/russellmilliner/upnote-api"
+Issues = "https://github.com/russellmilliner/upnote-api/issues"
+
+[project.scripts]
+upnote-api = "upnote_api:main"
+upnote-cli = "upnote_cli:main"

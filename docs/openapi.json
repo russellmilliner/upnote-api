@@ -1,0 +1,2297 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "UpNote Local Store & Deep-Link REST API",
+    "description": "Full REST API for querying, searching, creating, updating, tagging, and managing notes, notebooks, tags, and workspaces in UpNote on Linux.\n\n- **Read Operations** query UpNote's local SQLite store (`~/.config/UpNote/upnote.sqlite3`) in read-only mode.\n- **Write Operations** dispatch `upnote://x-callback-url/...` commands to the running UpNote Electron instance so new notes, notebooks, tags, and trash/restore actions automatically synchronize with **UpNote Cloud**.",
+    "contact": {
+      "name": "Russell Milliner",
+      "url": "https://github.com/russellmilliner/upnote-api",
+      "email": "russell.milliner@gmail.com"
+    },
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/status": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Get UpNote service and store status",
+        "description": "Return service health, UpNote process status, and store item counts.",
+        "operationId": "get_status_api_v1_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Health check",
+        "description": "Return service health, UpNote process status, and store item counts.",
+        "operationId": "get_status_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app/launch": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Ensure UpNote desktop app is running",
+        "description": "Ensure the UpNote desktop Electron process is running in the background.",
+        "operationId": "launch_upnote_app_api_v1_app_launch_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/app/open": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Open a note, notebook, tag, or deep link in UpNote UI",
+        "description": "Open a note, notebook, tag, or custom x-callback-url in the UpNote UI.",
+        "operationId": "open_in_upnote_ui_api_v1_app_open_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeepLinkOpenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Open In Upnote Ui Api V1 App Open Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces": {
+      "get": {
+        "tags": [
+          "Spaces"
+        ],
+        "summary": "List all workspaces/spaces",
+        "description": "List all UpNote spaces (including the default 'General' space).",
+        "operationId": "list_spaces_api_v1_spaces_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SpaceOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Spaces Api V1 Spaces Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space}": {
+      "get": {
+        "tags": [
+          "Spaces"
+        ],
+        "summary": "Get space details by name or ID",
+        "description": "Get a single space by name ('General', 'CHEP') or ID ('default', UUID).",
+        "operationId": "get_space_api_v1_spaces__space__get",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Space"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notebooks": {
+      "get": {
+        "tags": [
+          "Notebooks"
+        ],
+        "summary": "List or search notebooks",
+        "description": "List notebooks with their nested paths and note counts.",
+        "operationId": "list_notebooks_api_v1_notebooks_get",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by space name ('General', 'CHEP') or ID ('default', UUID)",
+              "title": "Space"
+            },
+            "description": "Filter by space name ('General', 'CHEP') or ID ('default', UUID)"
+          },
+          {
+            "name": "parent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by parent notebook UUID",
+              "title": "Parent Id"
+            },
+            "description": "Filter by parent notebook UUID"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive search by notebook title/path",
+              "title": "Q"
+            },
+            "description": "Case-insensitive search by notebook title/path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotebookOut"
+                  },
+                  "title": "Response List Notebooks Api V1 Notebooks Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Notebooks"
+        ],
+        "summary": "Create a new notebook",
+        "description": "Create a new notebook in the target space via UpNote x-callback-url.",
+        "operationId": "create_notebook_api_v1_notebooks_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotebookCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notebooks/{notebook}": {
+      "get": {
+        "tags": [
+          "Notebooks"
+        ],
+        "summary": "Get notebook by UUID, title, or path",
+        "description": "Get a notebook by UUID, title (e.g. 'AI'), or slash-separated path.",
+        "operationId": "get_notebook_api_v1_notebooks__notebook__get",
+        "parameters": [
+          {
+            "name": "notebook",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Notebook"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional space name or ID",
+              "title": "Space"
+            },
+            "description": "Optional space name or ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotebookOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notebooks/{notebook}/notes": {
+      "get": {
+        "tags": [
+          "Notebooks"
+        ],
+        "summary": "List all active notes inside a notebook",
+        "description": "List all active notes inside a specific notebook.",
+        "operationId": "list_notebook_notes_api_v1_notebooks__notebook__notes_get",
+        "parameters": [
+          {
+            "name": "notebook",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Notebook"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional space name or ID",
+              "title": "Space"
+            },
+            "description": "Optional space name or ID"
+          },
+          {
+            "name": "include_content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include full 'text' and 'html' fields",
+              "default": false,
+              "title": "Include Content"
+            },
+            "description": "Include full 'text' and 'html' fields"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NoteOut"
+                  },
+                  "title": "Response List Notebook Notes Api V1 Notebooks  Notebook  Notes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tags": {
+      "get": {
+        "tags": [
+          "Tags"
+        ],
+        "summary": "List all tags with note counts",
+        "description": "List all tags along with active note counts.",
+        "operationId": "list_tags_api_v1_tags_get",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by space name or ID",
+              "title": "Space"
+            },
+            "description": "Filter by space name or ID"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search tag name",
+              "title": "Q"
+            },
+            "description": "Search tag name"
+          },
+          {
+            "name": "include_inactive",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include inactive tags",
+              "default": true,
+              "title": "Include Inactive"
+            },
+            "description": "Include inactive tags"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TagOut"
+                  },
+                  "title": "Response List Tags Api V1 Tags Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tags/{tag}/notes": {
+      "get": {
+        "tags": [
+          "Tags"
+        ],
+        "summary": "List notes carrying a specific tag",
+        "description": "List all active notes tagged with the given tag name.",
+        "operationId": "list_tag_notes_api_v1_tags__tag__notes_get",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Tag"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional space filter",
+              "title": "Space"
+            },
+            "description": "Optional space filter"
+          },
+          {
+            "name": "include_content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include full 'text' and 'html'",
+              "default": false,
+              "title": "Include Content"
+            },
+            "description": "Include full 'text' and 'html'"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NoteOut"
+                  },
+                  "title": "Response List Tag Notes Api V1 Tags  Tag  Notes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notes": {
+      "get": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Search and filter notes",
+        "description": "Search and filter notes across spaces, notebooks, and tags.",
+        "operationId": "list_notes_api_v1_notes_get",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by space name ('General', 'CHEP') or ID",
+              "title": "Space"
+            },
+            "description": "Filter by space name ('General', 'CHEP') or ID"
+          },
+          {
+            "name": "notebook",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by notebook title (e.g. 'AI'), path, or UUID",
+              "title": "Notebook"
+            },
+            "description": "Filter by notebook title (e.g. 'AI'), path, or UUID"
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by tag name (with or without '#', e.g. 'plex')",
+              "title": "Tag"
+            },
+            "description": "Filter by tag name (with or without '#', e.g. 'plex')"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Full-text search query across note title and text",
+              "title": "Q"
+            },
+            "description": "Full-text search query across note title and text"
+          },
+          {
+            "name": "trashed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Whether to return trashed notes",
+              "default": false,
+              "title": "Trashed"
+            },
+            "description": "Whether to return trashed notes"
+          },
+          {
+            "name": "pinned",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by pinned status",
+              "title": "Pinned"
+            },
+            "description": "Filter by pinned status"
+          },
+          {
+            "name": "bookmarked",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by bookmarked status",
+              "title": "Bookmarked"
+            },
+            "description": "Filter by bookmarked status"
+          },
+          {
+            "name": "has_todo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter notes containing todos",
+              "title": "Has Todo"
+            },
+            "description": "Filter notes containing todos"
+          },
+          {
+            "name": "is_template",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter template notes",
+              "title": "Is Template"
+            },
+            "description": "Filter template notes"
+          },
+          {
+            "name": "unsynced",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter unsynced notes",
+              "title": "Unsynced"
+            },
+            "description": "Filter unsynced notes"
+          },
+          {
+            "name": "include_content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include full 'text' and 'html' body in each returned note",
+              "default": false,
+              "title": "Include Content"
+            },
+            "description": "Include full 'text' and 'html' body in each returned note"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "description": "Maximum notes to return",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Maximum notes to return"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Pagination offset",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Pagination offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NoteOut"
+                  },
+                  "title": "Response List Notes Api V1 Notes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Create a new note in UpNote",
+        "description": "Create a new note in UpNote (with space, notebook, tags, and Markdown formatting)\nand automatically sync to UpNote Cloud.",
+        "operationId": "create_note_api_v1_notes_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notes/{note_id_or_title}": {
+      "get": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Get a single note by UUID or exact title",
+        "description": "Get a single note (including full text and HTML) by UUID or exact title.",
+        "operationId": "get_note_api_v1_notes__note_id_or_title__get",
+        "parameters": [
+          {
+            "name": "note_id_or_title",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id Or Title"
+            }
+          },
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional space filter when looking up by title",
+              "title": "Space"
+            },
+            "description": "Optional space filter when looking up by title"
+          },
+          {
+            "name": "notebook",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional notebook filter when looking up by title",
+              "title": "Notebook"
+            },
+            "description": "Optional notebook filter when looking up by title"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notes/{note_id}": {
+      "patch": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Partially update an existing note",
+        "description": "Update an existing note.\n\n- `strategy='cloud_replace'` (default): Creates the updated note via UpNote's\n  `x-callback-url/note/new` in the target space/notebook/tags and moves the\n  previous revision to Trash so UpNote Cloud syncs the change immediately.\n- `strategy='sqlite_direct'`: Updates the SQLite row in place in `upnote.sqlite3`.",
+        "operationId": "update_note_api_v1_notes__note_id__patch",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Replace or update an existing note",
+        "description": "Update an existing note.\n\n- `strategy='cloud_replace'` (default): Creates the updated note via UpNote's\n  `x-callback-url/note/new` in the target space/notebook/tags and moves the\n  previous revision to Trash so UpNote Cloud syncs the change immediately.\n- `strategy='sqlite_direct'`: Updates the SQLite row in place in `upnote.sqlite3`.",
+        "operationId": "update_note_api_v1_notes__note_id__put",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Move a note to Trash or permanently delete",
+        "description": "Move a note to Trash (synced to UpNote Cloud) or permanently mark it deleted.",
+        "operationId": "delete_note_api_v1_notes__note_id__delete",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "permanent",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite",
+              "default": false,
+              "title": "Permanent"
+            },
+            "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Note Api V1 Notes  Note Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notes/{note_id}/restore": {
+      "post": {
+        "tags": [
+          "Notes"
+        ],
+        "summary": "Restore a trashed note",
+        "description": "Restore a trashed note via `upnote://x-callback-url/note/restore`.",
+        "operationId": "restore_note_api_v1_notes__note_id__restore_post",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/filters": {
+      "get": {
+        "tags": [
+          "Filters & Files"
+        ],
+        "summary": "List saved UpNote filters",
+        "description": "List saved filters in the UpNote store.",
+        "operationId": "list_filters_api_v1_filters_get",
+        "parameters": [
+          {
+            "name": "space",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional space filter",
+              "title": "Space"
+            },
+            "description": "Optional space filter"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FilterOut"
+                  },
+                  "title": "Response List Filters Api V1 Filters Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files": {
+      "get": {
+        "tags": [
+          "Filters & Files"
+        ],
+        "summary": "List file attachments",
+        "description": "List file attachments tracked in the UpNote store.",
+        "operationId": "list_files_api_v1_files_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Search attachment filename",
+              "title": "Q"
+            },
+            "description": "Search attachment filename"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileOut"
+                  },
+                  "title": "Response List Files Api V1 Files Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DeepLinkOpenRequest": {
+        "properties": {
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url",
+            "description": "Raw upnote://x-callback-url/... URL to dispatch"
+          },
+          "note_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Id",
+            "description": "Note UUID to open in UpNote UI"
+          },
+          "notebook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notebook Id",
+            "description": "Notebook UUID to open in UpNote UI"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag",
+            "description": "Tag name to view in UpNote UI"
+          }
+        },
+        "type": "object",
+        "title": "DeepLinkOpenRequest"
+      },
+      "FileOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag"
+          },
+          "synced": {
+            "type": "boolean",
+            "title": "Synced",
+            "default": true
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "FileOut"
+      },
+      "FilterOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "filter_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Type"
+          },
+          "words": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Words"
+          },
+          "space_id": {
+            "type": "string",
+            "title": "Space Id"
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name"
+          },
+          "inactive": {
+            "type": "boolean",
+            "title": "Inactive",
+            "default": false
+          },
+          "synced": {
+            "type": "boolean",
+            "title": "Synced",
+            "default": true
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "space_id",
+          "space_name"
+        ],
+        "title": "FilterOut"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "NoteCreateRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Title",
+            "description": "Page/note title"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Note body (Markdown or plain text)",
+            "default": ""
+          },
+          "markdown": {
+            "type": "boolean",
+            "title": "Markdown",
+            "description": "Parse 'text' as Markdown (supports tables, headings, non-wrapping code blocks)",
+            "default": true
+          },
+          "space": {
+            "type": "string",
+            "title": "Space",
+            "description": "Target space name ('General', 'CHEP') or ID ('default' or UUID)",
+            "default": "General"
+          },
+          "notebook": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notebook",
+            "description": "Target notebook title (e.g. 'AI'), nested path ('Parent/Child'), or notebook UUID"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag",
+            "description": "Single tag to attach (with or without leading '#', e.g. 'plex')"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": "List of tags to attach (e.g. ['plex', 'proxmox'])"
+          },
+          "new_window": {
+            "type": "boolean",
+            "title": "New Window",
+            "description": "Whether to open the newly created note in a separate UpNote window",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "NoteCreateRequest"
+      },
+      "NoteOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "space_id": {
+            "type": "string",
+            "title": "Space Id"
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name"
+          },
+          "notebooks": {
+            "items": {
+              "$ref": "#/components/schemas/NotebookRef"
+            },
+            "type": "array",
+            "title": "Notebooks"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "pinned": {
+            "type": "boolean",
+            "title": "Pinned",
+            "default": false
+          },
+          "bookmarked": {
+            "type": "boolean",
+            "title": "Bookmarked",
+            "default": false
+          },
+          "trashed": {
+            "type": "boolean",
+            "title": "Trashed",
+            "default": false
+          },
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted",
+            "default": false
+          },
+          "synced": {
+            "type": "boolean",
+            "title": "Synced",
+            "default": false
+          },
+          "has_todo": {
+            "type": "boolean",
+            "title": "Has Todo",
+            "default": false
+          },
+          "is_template": {
+            "type": "boolean",
+            "title": "Is Template",
+            "default": false
+          },
+          "files_count": {
+            "type": "integer",
+            "title": "Files Count",
+            "default": 0
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "synced_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synced At"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "html": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "space_id",
+          "space_name"
+        ],
+        "title": "NoteOut"
+      },
+      "NoteUpdateRequest": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "Updated note title"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "Updated note body (Markdown or plain text)"
+          },
+          "html": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Html",
+            "description": "Updated raw HTML (used only when strategy='sqlite_direct')"
+          },
+          "markdown": {
+            "type": "boolean",
+            "title": "Markdown",
+            "description": "Interpret 'text' as Markdown",
+            "default": true
+          },
+          "space": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Space",
+            "description": "Target space name or ID"
+          },
+          "notebook": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notebook",
+            "description": "Target notebook title, path, or UUID"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag",
+            "description": "Single tag to set"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": "List of tags to set"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned",
+            "description": "Pin or unpin note"
+          },
+          "bookmarked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bookmarked",
+            "description": "Bookmark or unbookmark note"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "cloud_replace",
+              "sqlite_direct"
+            ],
+            "title": "Strategy",
+            "description": "'cloud_replace' creates a synced replacement note via UpNote x-callback-url and moves the old revision to trash so UpNote Cloud syncs immediately; 'sqlite_direct' updates the row in-place in upnote.sqlite3.",
+            "default": "cloud_replace"
+          }
+        },
+        "type": "object",
+        "title": "NoteUpdateRequest"
+      },
+      "NotebookCreateRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Title",
+            "description": "Notebook title"
+          },
+          "space": {
+            "type": "string",
+            "title": "Space",
+            "description": "Space name ('General', 'CHEP') or space ID ('default' or UUID)",
+            "default": "General"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "NotebookCreateRequest"
+      },
+      "NotebookOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "space_id": {
+            "type": "string",
+            "title": "Space Id"
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name"
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": false
+          },
+          "inactive": {
+            "type": "boolean",
+            "title": "Inactive",
+            "default": false
+          },
+          "synced": {
+            "type": "boolean",
+            "title": "Synced",
+            "default": true
+          },
+          "notes_count": {
+            "type": "integer",
+            "title": "Notes Count",
+            "default": 0
+          },
+          "note_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Note Ids"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "path",
+          "space_id",
+          "space_name"
+        ],
+        "title": "NotebookOut"
+      },
+      "NotebookRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "path"
+        ],
+        "title": "NotebookRef"
+      },
+      "SpaceOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "Space ID ('default' for General, or UUID)"
+          },
+          "sqlite_space": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sqlite Space",
+            "description": "Value stored in SQLite 'space' column (NULL for General)"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Human-readable space name (e.g. 'General', 'CHEP')"
+          },
+          "locked": {
+            "type": "boolean",
+            "title": "Locked",
+            "default": false
+          },
+          "notebooks_count": {
+            "type": "integer",
+            "title": "Notebooks Count",
+            "default": 0
+          },
+          "notes_count": {
+            "type": "integer",
+            "title": "Notes Count",
+            "default": 0
+          },
+          "tags_count": {
+            "type": "integer",
+            "title": "Tags Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SpaceOut"
+      },
+      "StatusOut": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "default": "0.1.0"
+          },
+          "db_path": {
+            "type": "string",
+            "title": "Db Path"
+          },
+          "db_exists": {
+            "type": "boolean",
+            "title": "Db Exists"
+          },
+          "upnote_running": {
+            "type": "boolean",
+            "title": "Upnote Running"
+          },
+          "upnote_pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upnote Pid"
+          },
+          "upnote_binary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upnote Binary"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "db_path",
+          "db_exists",
+          "upnote_running",
+          "counts"
+        ],
+        "title": "StatusOut"
+      },
+      "TagOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Tag title with leading '#' (e.g. '#plex')"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Normalized tag name without '#' (e.g. 'plex')"
+          },
+          "space_id": {
+            "type": "string",
+            "title": "Space Id"
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name"
+          },
+          "inactive": {
+            "type": "boolean",
+            "title": "Inactive",
+            "default": false
+          },
+          "synced": {
+            "type": "boolean",
+            "title": "Synced",
+            "default": true
+          },
+          "notes_count": {
+            "type": "integer",
+            "title": "Notes Count",
+            "default": 0
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "name",
+          "space_id",
+          "space_name"
+        ],
+        "title": "TagOut"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "System",
+      "description": "Service health, UpNote Electron process status, and UI deep-link triggers."
+    },
+    {
+      "name": "Spaces",
+      "description": "Query UpNote workspaces (`General` default space and custom spaces like `CHEP`)."
+    },
+    {
+      "name": "Notebooks",
+      "description": "List, search, inspect, and create notebooks across UpNote spaces."
+    },
+    {
+      "name": "Tags",
+      "description": "List hashtags (`#tag`), counts, and retrieve notes associated with a tag."
+    },
+    {
+      "name": "Notes",
+      "description": "Full CRUD for UpNote pages/notes with Markdown rendering, non-wrapping code blocks, notebooks, tags, Trash, and cloud sync."
+    },
+    {
+      "name": "Filters & Files",
+      "description": "Inspect saved UpNote filters and file attachments."
+    }
+  ]
+}

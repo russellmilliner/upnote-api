@@ -1,0 +1,18 @@
+[Unit]
+Description=UpNote Local Store & Deep-Link REST API Service
+After=network.target graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/upnote-api
+Environment="UPNOTE_API_HOST=127.0.0.1"
+Environment="UPNOTE_API_PORT=8765"
+Environment="UPNOTE_DB_PATH=%h/.config/UpNote/upnote.sqlite3"
+Environment="UPNOTE_APPIMAGE_PATH=%h/AppImages/upnote.appimage"
+Environment="UPNOTE_LAUNCH_SCRIPT=%h/.local/bin/upnotelaunch.sh"
+ExecStart=/usr/bin/python3 %h/.local/share/upnote-api/upnote_api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
