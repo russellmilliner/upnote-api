@@ -11,24 +11,36 @@ Electron deep-link interface.
 
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
+import sys
+import tarfile
+import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
+GITHUB_REPO = "russellmilliner/upnote-api"
+GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+UPDATE_CHECK_INTERVAL_SECONDS = 6 * 3600
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -228,15 +240,174 @@ class FileOut(BaseModel):
     updated_at: float | None = None
 
 
+class UpdateCheckOut(BaseModel):
+    current_version: str = APP_VERSION
+    latest_version: str = APP_VERSION
+    update_available: bool = False
+    release_url: str = GITHUB_RELEASES_PAGE_URL
+    download_url: str | None = None
+    release_notes: str = ""
+    checked_at: float | None = None
+
+
+class UpdateInstallOut(BaseModel):
+    ok: bool = True
+    previous_version: str = APP_VERSION
+    installed_version: str
+    release_url: str
+    message: str
+
+
 class StatusOut(BaseModel):
     ok: bool = True
     version: str = APP_VERSION
+    latest_version: str = APP_VERSION
+    update_available: bool = False
+    release_url: str | None = None
     db_path: str
     db_exists: bool
     upnote_running: bool
     upnote_pid: int | None = None
     upnote_binary: str | None = None
     counts: dict[str, int]
+
+
+# ---------------------------------------------------------------------------
+# GitHub Release Update Checker & Self-Updater
+# ---------------------------------------------------------------------------
+
+_UPDATE_CACHE_LOCK = threading.Lock()
+_CACHED_UPDATE_INFO: UpdateCheckOut = UpdateCheckOut()
+
+
+def _parse_semver(version: str) -> tuple[int, int, int]:
+    cleaned = version.strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+    parts = [int(p) if p.isdigit() else 0 for p in cleaned.split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
+def is_newer_version(current: str, candidate: str) -> bool:
+    return _parse_semver(candidate) > _parse_semver(current)
+
+
+def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
+    """Query GitHub Releases API for the latest UpNote REST API version."""
+    global _CACHED_UPDATE_INFO
+    req = urllib.request.Request(
+        GITHUB_LATEST_RELEASE_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"upnote-api/{APP_VERSION}",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    tag_name = str(data.get("tag_name") or "").strip()
+    latest_version = tag_name.lstrip("vV") or APP_VERSION
+    html_url = str(data.get("html_url") or GITHUB_RELEASES_PAGE_URL)
+    body = str(data.get("body") or "")
+    download_url: str | None = None
+    for asset in data.get("assets") or []:
+        name = str(asset.get("name") or "")
+        burl = str(asset.get("browser_download_url") or "")
+        if name.endswith(".tar.gz") and burl:
+            download_url = burl
+            break
+
+    info = UpdateCheckOut(
+        current_version=APP_VERSION,
+        latest_version=latest_version,
+        update_available=is_newer_version(APP_VERSION, latest_version),
+        release_url=html_url,
+        download_url=download_url,
+        release_notes=body,
+        checked_at=time.time(),
+    )
+    with _UPDATE_CACHE_LOCK:
+        _CACHED_UPDATE_INFO = info
+    return info
+
+
+def get_cached_update_info() -> UpdateCheckOut:
+    with _UPDATE_CACHE_LOCK:
+        return _CACHED_UPDATE_INFO
+
+
+def _background_update_check_loop() -> None:
+    time.sleep(3.0)
+    while True:
+        try:
+            check_for_updates(timeout=10.0)
+        except Exception:
+            pass
+        time.sleep(UPDATE_CHECK_INTERVAL_SECONDS)
+
+
+def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut:
+    """Download and install the latest GitHub release archive."""
+    info = check_for_updates(timeout=15.0)
+    if not info.update_available:
+        return UpdateInstallOut(
+            ok=True,
+            previous_version=APP_VERSION,
+            installed_version=APP_VERSION,
+            release_url=info.release_url,
+            message=f"Already up to date (v{APP_VERSION}).",
+        )
+    if not info.download_url:
+        raise RuntimeError(f"No .tar.gz release asset found at {info.release_url}")
+
+    with tempfile.TemporaryDirectory(prefix="upnote-api-update-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        archive_path = tmp_path / "upnote-api-release.tar.gz"
+        req = urllib.request.Request(
+            info.download_url,
+            headers={"User-Agent": f"upnote-api/{APP_VERSION}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=60.0) as resp:
+            archive_path.write_bytes(resp.read())
+
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(path=tmp_path)
+
+        install_dir = Path.home() / ".local" / "share" / "upnote-api"
+        bin_dir = Path.home() / ".local" / "bin"
+        install_dir.mkdir(parents=True, exist_ok=True)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+
+        extracted_api = list(tmp_path.glob("**/src/upnote_api.py"))
+        extracted_cli = list(tmp_path.glob("**/src/upnote_cli.py"))
+        if not extracted_api or not extracted_cli:
+            raise RuntimeError("Release archive is missing src/upnote_api.py or src/upnote_cli.py")
+
+        target_api = install_dir / "upnote_api.py"
+        target_cli = bin_dir / "upnote-cli"
+        shutil.copy2(extracted_api[0], target_api)
+        target_api.chmod(0o755)
+        shutil.copy2(extracted_cli[0], target_cli)
+        target_cli.chmod(0o755)
+
+        if restart_service:
+            subprocess.Popen(
+                ["sh", "-c", "sleep 1 && systemctl --user restart upnote-api.service"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+    return UpdateInstallOut(
+        ok=True,
+        previous_version=APP_VERSION,
+        installed_version=info.latest_version,
+        release_url=info.release_url,
+        message=f"Installed UpNote REST API v{info.latest_version}"
+        + (" and scheduled upnote-api.service restart." if restart_service else "."),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +890,22 @@ OPENAPI_TAGS = [
     },
 ]
 
+_UPDATE_THREAD_STARTED = False
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    global _UPDATE_THREAD_STARTED
+    if not _UPDATE_THREAD_STARTED:
+        _UPDATE_THREAD_STARTED = True
+        threading.Thread(
+            target=_background_update_check_loop,
+            name="upnote-api-update-checker",
+            daemon=True,
+        ).start()
+    yield
+
+
 app = FastAPI(
     title="UpNote Local Store & Deep-Link REST API",
     description=(
@@ -730,6 +917,7 @@ app = FastAPI(
     ),
     version=APP_VERSION,
     openapi_tags=OPENAPI_TAGS,
+    lifespan=_lifespan,
     contact={
         "name": "Russell Milliner",
         "email": "russell.milliner@gmail.com",
@@ -783,9 +971,13 @@ def get_status() -> StatusOut:
                 "SELECT COUNT(*) FROM files WHERE deleted = 0"
             ).fetchone()[0]
 
+    upd = get_cached_update_info()
     return StatusOut(
         ok=True,
         version=APP_VERSION,
+        latest_version=upd.latest_version,
+        update_available=upd.update_available,
+        release_url=upd.release_url,
         db_path=str(DB_PATH),
         db_exists=DB_PATH.exists(),
         upnote_running=pid is not None,
@@ -793,6 +985,47 @@ def get_status() -> StatusOut:
         upnote_binary=binary,
         counts=counts,
     )
+
+
+@app.get(
+    "/api/v1/update",
+    response_model=UpdateCheckOut,
+    tags=["System"],
+    summary="Check GitHub Releases for a newer UpNote REST API version",
+)
+def get_update_status(
+    refresh: bool = Query(
+        default=True,
+        description="Query GitHub Releases API immediately (if false, returns cached check)",
+    ),
+) -> UpdateCheckOut:
+    """Check whether a newer version of UpNote REST API is available on GitHub."""
+    if not refresh and get_cached_update_info().checked_at is not None:
+        return get_cached_update_info()
+    try:
+        return check_for_updates(timeout=10.0)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"GitHub update check failed: {exc}",
+        ) from exc
+
+
+@app.post(
+    "/api/v1/update/install",
+    response_model=UpdateInstallOut,
+    tags=["System"],
+    summary="Download and install the latest UpNote REST API release from GitHub",
+)
+def install_update() -> UpdateInstallOut:
+    """Download the latest GitHub release archive, update local files, and restart upnote-api.service."""
+    try:
+        return install_update_from_github(restart_service=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Self-update installation failed: {exc}",
+        ) from exc
 
 
 @app.post("/api/v1/app/launch", response_model=StatusOut, tags=["System"], summary="Ensure UpNote desktop app is running")
@@ -1477,6 +1710,53 @@ def list_files(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="upnote-api",
+        description="UpNote Local Store & Deep-Link REST API Service",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"upnote-api v{APP_VERSION}",
+    )
+    parser.add_argument(
+        "-u",
+        "--check-update",
+        action="store_true",
+        help="Check GitHub Releases for a newer UpNote REST API version and exit",
+    )
+    parser.add_argument(
+        "--self-update",
+        action="store_true",
+        help="Download and install the latest UpNote REST API release from GitHub and exit",
+    )
+    args = parser.parse_args()
+
+    if args.check_update:
+        try:
+            info = check_for_updates(timeout=15.0)
+            if info.update_available:
+                print(
+                    f"Update available: v{info.current_version} -> v{info.latest_version}\n"
+                    f"Release URL: {info.release_url}"
+                )
+            else:
+                print(f"UpNote Local REST API v{info.current_version} is up to date.")
+            return
+        except Exception as exc:
+            print(f"Update check failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.self_update:
+        try:
+            res = install_update_from_github(restart_service=True)
+            print(res.message)
+            return
+        except Exception as exc:
+            print(f"Self-update failed: {exc}", file=sys.stderr)
+            sys.exit(1)
+
     uvicorn.run(
         app,
         host=API_HOST,

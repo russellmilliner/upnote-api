@@ -1,6 +1,6 @@
 # UpNote Local Store & Deep-Link REST API — OpenAPI / Swagger Reference
 
-- **Version:** `v0.1.1`
+- **Version:** `v0.1.2`
 - **OpenAPI Version:** `3.1.0`
 - **Interactive Swagger UI:** `http://127.0.0.1:8765/docs`
 - **Interactive ReDoc UI:** `http://127.0.0.1:8765/redoc`
@@ -19,6 +19,8 @@ Full REST API for querying, searching, creating, updating, tagging, and managing
 | :--- | :--- | :--- | :--- |
 | **System** | `GET` | `/api/v1/status` | Get UpNote service and store status |
 | **System** | `GET` | `/health` | Health check |
+| **System** | `GET` | `/api/v1/update` | Check GitHub Releases for a newer UpNote REST API version |
+| **System** | `POST` | `/api/v1/update/install` | Download and install the latest UpNote REST API release from GitHub |
 | **System** | `POST` | `/api/v1/app/launch` | Ensure UpNote desktop app is running |
 | **System** | `POST` | `/api/v1/app/open` | Open a note, notebook, tag, or deep link in UpNote UI |
 | **Spaces** | `GET` | `/api/v1/spaces` | List all workspaces/spaces |
@@ -54,6 +56,24 @@ Return service health, UpNote process status, and store item counts.
 - **Category:** `System`
 
 Return service health, UpNote process status, and store item counts.
+
+### `GET /api/v1/update` — Check GitHub Releases for a newer UpNote REST API version
+
+- **Category:** `System`
+
+Check whether a newer version of UpNote REST API is available on GitHub.
+
+#### Parameters
+
+| Name | In | Type | Required | Description |
+| :--- | :--- | :--- | :---: | :--- |
+| `refresh` | `query` | `boolean` | No | Query GitHub Releases API immediately (if false, returns cached check) |
+
+### `POST /api/v1/update/install` — Download and install the latest UpNote REST API release from GitHub
+
+- **Category:** `System`
+
+Download the latest GitHub release archive, update local files, and restart upnote-api.service.
 
 ### `POST /api/v1/app/launch` — Ensure UpNote desktop app is running
 
@@ -448,7 +468,10 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `version` | `string` | No | `"0.1.1"` |  |
+| `version` | `string` | No | `"0.1.2"` |  |
+| `latest_version` | `string` | No | `"0.1.2"` |  |
+| `update_available` | `boolean` | No | `false` |  |
+| `release_url` | `string / null` | No | — |  |
 | `db_path` | `string` | Yes | — |  |
 | `db_exists` | `boolean` | Yes | — |  |
 | `upnote_running` | `boolean` | Yes | — |  |
@@ -470,6 +493,28 @@ List file attachments tracked in the UpNote store.
 | `notes_count` | `integer` | No | `0` |  |
 | `created_at` | `number / null` | No | — |  |
 | `updated_at` | `number / null` | No | — |  |
+
+### Schema: `UpdateCheckOut`
+
+| Field | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `current_version` | `string` | No | `"0.1.2"` |  |
+| `latest_version` | `string` | No | `"0.1.2"` |  |
+| `update_available` | `boolean` | No | `false` |  |
+| `release_url` | `string` | No | `"https://github.com/russellmilliner/upnote-api/releases"` |  |
+| `download_url` | `string / null` | No | — |  |
+| `release_notes` | `string` | No | `""` |  |
+| `checked_at` | `number / null` | No | — |  |
+
+### Schema: `UpdateInstallOut`
+
+| Field | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `ok` | `boolean` | No | `true` |  |
+| `previous_version` | `string` | No | `"0.1.2"` |  |
+| `installed_version` | `string` | Yes | — |  |
+| `release_url` | `string` | Yes | — |  |
+| `message` | `string` | Yes | — |  |
 
 ### Schema: `ValidationError`
 

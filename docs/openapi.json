@@ -12,7 +12,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "0.1.1"
+    "version": "0.1.2"
   },
   "paths": {
     "/api/v1/status": {
@@ -52,6 +52,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/update": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Check GitHub Releases for a newer UpNote REST API version",
+        "description": "Check whether a newer version of UpNote REST API is available on GitHub.",
+        "operationId": "get_update_status_api_v1_update_get",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Query GitHub Releases API immediately (if false, returns cached check)",
+              "default": true,
+              "title": "Refresh"
+            },
+            "description": "Query GitHub Releases API immediately (if false, returns cached check)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateCheckOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/update/install": {
+      "post": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Download and install the latest UpNote REST API release from GitHub",
+        "description": "Download the latest GitHub release archive, update local files, and restart upnote-api.service.",
+        "operationId": "install_update_api_v1_update_install_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateInstallOut"
                 }
               }
             }
@@ -2101,7 +2169,28 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.1.1"
+            "default": "0.1.2"
+          },
+          "latest_version": {
+            "type": "string",
+            "title": "Latest Version",
+            "default": "0.1.2"
+          },
+          "update_available": {
+            "type": "boolean",
+            "title": "Update Available",
+            "default": false
+          },
+          "release_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Url"
           },
           "db_path": {
             "type": "string",
@@ -2225,6 +2314,92 @@
           "space_name"
         ],
         "title": "TagOut"
+      },
+      "UpdateCheckOut": {
+        "properties": {
+          "current_version": {
+            "type": "string",
+            "title": "Current Version",
+            "default": "0.1.2"
+          },
+          "latest_version": {
+            "type": "string",
+            "title": "Latest Version",
+            "default": "0.1.2"
+          },
+          "update_available": {
+            "type": "boolean",
+            "title": "Update Available",
+            "default": false
+          },
+          "release_url": {
+            "type": "string",
+            "title": "Release Url",
+            "default": "https://github.com/russellmilliner/upnote-api/releases"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          },
+          "release_notes": {
+            "type": "string",
+            "title": "Release Notes",
+            "default": ""
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          }
+        },
+        "type": "object",
+        "title": "UpdateCheckOut"
+      },
+      "UpdateInstallOut": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "previous_version": {
+            "type": "string",
+            "title": "Previous Version",
+            "default": "0.1.2"
+          },
+          "installed_version": {
+            "type": "string",
+            "title": "Installed Version"
+          },
+          "release_url": {
+            "type": "string",
+            "title": "Release Url"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "installed_version",
+          "release_url",
+          "message"
+        ],
+        "title": "UpdateInstallOut"
       },
       "ValidationError": {
         "properties": {

@@ -1,7 +1,7 @@
 # UpNote Local Store & Deep-Link REST API (`upnote-api`)
 
-[![Version](https://img.shields.io/badge/Version-v0.1.1-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.1.1)
-[![Release Archive](https://img.shields.io/badge/Release-Download_v0.1.1-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.1.1/upnote-api-v0.1.1-linux-x86_64.tar.gz)
+[![Version](https://img.shields.io/badge/Version-v0.1.2-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.1.2)
+[![Release Archive](https://img.shields.io/badge/Release-Download_v0.1.2-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.1.2/upnote-api-v0.1.2-linux-x86_64.tar.gz)
 [![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1.0%20%2F%20Swagger-85ea2d?style=for-the-badge&logo=swagger&logoColor=black)](docs/SWAGGER.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Uvicorn-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)

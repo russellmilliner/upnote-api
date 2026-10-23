@@ -2,6 +2,11 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.1.2](https://github.com/russellmilliner/upnote-api/releases/tag/v0.1.2) — 2026-10-22
+
+### Changes
+- docs(changelog): add v0.1.1 dependency changelog (7d2d5ad)
+
 ## [v0.1.1](https://github.com/russellmilliner/upnote-api/releases/tag/v0.1.1) — 2026-10-22
 
 ### 📦 Bumped Dependencies (3 packages)
