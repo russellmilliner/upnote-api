@@ -12,7 +12,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "paths": {
     "/api/v1/status": {
@@ -2101,7 +2101,7 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.1.0"
+            "default": "0.1.1"
           },
           "db_path": {
             "type": "string",

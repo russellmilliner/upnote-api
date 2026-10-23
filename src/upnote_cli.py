@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 BASE_URL = os.environ.get("UPNOTE_API_URL", "http://127.0.0.1:8765")
 
 

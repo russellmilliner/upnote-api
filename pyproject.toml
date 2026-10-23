@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "upnote-api"
-version = "0.1.0"
+version = "0.1.1"
 description = "Full REST API and CLI for interacting with the local UpNote SQLite store and Electron x-callback-url deep-link interface on Linux."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,9 +14,9 @@ authors = [
 ]
 keywords = ["upnote", "fastapi", "rest-api", "sqlite", "notes", "linux", "systemd"]
 dependencies = [
-  "fastapi>=0.110.0",
-  "uvicorn>=0.27.0",
-  "pydantic>=2.6.0",
+  "fastapi>=0.161.1",
+  "uvicorn>=0.54.0",
+  "pydantic>=2.14.1",
 ]
 
 [project.urls]

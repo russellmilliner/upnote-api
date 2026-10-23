@@ -1,6 +1,6 @@
 # UpNote Local Store & Deep-Link REST API — OpenAPI / Swagger Reference
 
-- **Version:** `v0.1.0`
+- **Version:** `v0.1.1`
 - **OpenAPI Version:** `3.1.0`
 - **Interactive Swagger UI:** `http://127.0.0.1:8765/docs`
 - **Interactive ReDoc UI:** `http://127.0.0.1:8765/redoc`
@@ -448,7 +448,7 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `version` | `string` | No | `"0.1.0"` |  |
+| `version` | `string` | No | `"0.1.1"` |  |
 | `db_path` | `string` | Yes | — |  |
 | `db_exists` | `boolean` | Yes | — |  |
 | `upnote_running` | `boolean` | Yes | — |  |
