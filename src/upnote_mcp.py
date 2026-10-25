@@ -33,7 +33,7 @@ def _clean_note_summary(n: dict[str, Any], include_content: bool = False) -> dic
         "updated_at": n.get("updated_at"),
     }
     if include_content:
-        out["text"] = n.get("text")
+        out["text"] = n.get("markdown") or n.get("text")
     return out
 
 
@@ -164,7 +164,7 @@ def upnote_update_note_safe(
     )
     curr_resp.raise_for_status()
     curr = curr_resp.json()
-    existing_text = (curr.get("text") or "").strip()
+    existing_text = (curr.get("markdown") or curr.get("text") or "").strip()
     existing_title = curr.get("title") or ""
 
     lines = existing_text.splitlines()

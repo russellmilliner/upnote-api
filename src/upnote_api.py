@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import html as html_mod
 import json
 import os
 import re
@@ -36,7 +37,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -152,6 +153,7 @@ class NoteOut(BaseModel):
     updated_at: float | None = None
     synced_at: float | None = None
     text: str | None = None
+    markdown: str | None = None
     html: str | None = None
 
 
@@ -430,11 +432,20 @@ def get_db_connection(readonly: bool = True) -> sqlite3.Connection:
     return conn
 
 
+_CACHED_UPNOTE_PROC: tuple[int, str, dict[str, str]] | None = None
+
+
 def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
     """
     Locate the running UpNote AppImage / Electron process, its mounted binary,
     and its desktop session environment variables.
     """
+    global _CACHED_UPNOTE_PROC
+    if _CACHED_UPNOTE_PROC is not None:
+        cpid, cbin, cenv = _CACHED_UPNOTE_PROC
+        if Path(f"/proc/{cpid}").exists() and Path(cbin).exists():
+            return cpid, cbin, cenv
+
     mounted_bins = sorted(glob.glob("/tmp/.mount_upnote*/upnote"))
     binary_path = mounted_bins[-1] if mounted_bins else (
         str(APPIMAGE_PATH) if APPIMAGE_PATH.exists() else None
@@ -484,6 +495,8 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
             except (PermissionError, FileNotFoundError, ProcessLookupError):
                 continue
 
+    if found_pid is not None and binary_path is not None:
+        _CACHED_UPNOTE_PROC = (found_pid, binary_path, session_env)
     return found_pid, binary_path, session_env
 
 
@@ -730,9 +743,12 @@ def row_to_note_out(
     except json.JSONDecodeError:
         tags = []
 
+    title_val = row["title"] or ""
+    md_content = html_to_markdown(row["html"], title_val) if include_content else None
+
     return NoteOut(
         id=row["id"],
-        title=row["title"] or "",
+        title=title_val,
         summary=row["summary"],
         space_id=sp_id,
         space_name=sp_name,
@@ -749,7 +765,8 @@ def row_to_note_out(
         created_at=row["createdAt"],
         updated_at=row["updatedAt"],
         synced_at=row["syncedAt"],
-        text=row["text"] if include_content else None,
+        text=(md_content or row["text"]) if include_content else None,
+        markdown=md_content,
         html=row["html"] if include_content else None,
     )
 
@@ -770,6 +787,174 @@ def build_hashtag_anchor_html(tag_name: str) -> str:
         f'spellcheck="false" data-non-editable="true" '
         f'href="upnote://x-callback-url/tag/view?tag={encoded}">#{norm}</a>'
     )
+
+
+def strip_duplicate_leading_title(body: str, title: str) -> str:
+    """Strip leading `# Title` or `## Title` lines if they duplicate the note's title."""
+    if not body or not title:
+        return body
+    norm_title = re.sub(r"[\s\-–—:]+", " ", html_mod.unescape(title).strip().lower())
+    s = body.strip()
+    for _ in range(2):
+        lines = s.splitlines()
+        if not lines:
+            break
+        first = lines[0].strip()
+        first_clean = re.sub(r"^#{1,6}\s*", "", first)
+        norm_first = re.sub(r"[\s\-–—:`*]+", " ", html_mod.unescape(first_clean).strip().lower())
+        if norm_first == norm_title:
+            s = "\n".join(lines[1:]).strip()
+        else:
+            break
+    return s
+
+
+def html_to_markdown(raw_html: str | None, title: str = "") -> str:
+    """Reconstruct clean, human-readable Markdown from UpNote's stored HTML column."""
+    if not raw_html:
+        return ""
+    s = raw_html
+    # Strip UpNote native tag links (<a ... data-upnote-tag="#..." ...>#...</a>)
+    s = re.sub(r"<a\b[^>]*\bdata-upnote-tag=[^>]*>.*?</a>", "", s, flags=re.I | re.S)
+
+    # Convert <pre ...>...</pre> blocks first with placeholders so inner HTML/newlines are preserved
+    pre_blocks: list[str] = []
+
+    def _replace_pre(m: re.Match[str]) -> str:
+        attrs = m.group(1) or ""
+        body = m.group(2) or ""
+        lang_m = re.search(r"data-code-language=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
+        lang = lang_m.group(1).strip() if lang_m else ""
+        body = re.sub(r"<br\s*/?>", "\n", body, flags=re.I)
+        body = re.sub(r"<[^>]+>", "", body)
+        body = html_mod.unescape(body).rstrip("\n")
+        idx = len(pre_blocks)
+        pre_blocks.append(f"\n```{lang}\n{body}\n```\n")
+        return f"\n@@PRE_BLOCK_{idx}@@\n"
+
+    s = re.sub(r"<pre(\s[^>]*)?>(.*?)</pre>", _replace_pre, s, flags=re.I | re.S)
+
+    def _clean_inline(fragment: str) -> str:
+        f = fragment
+        f = re.sub(r"<br\s*/?>", " ", f, flags=re.I)
+        f = re.sub(
+            r"<code\b[^>]*>(.*?)</code>",
+            lambda m: "`" + html_mod.unescape(re.sub(r"<[^>]+>", "", m.group(1))) + "`",
+            f,
+            flags=re.I | re.S,
+        )
+        f = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f, flags=re.I | re.S)
+        f = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", f, flags=re.I | re.S)
+        f = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", f, flags=re.I | re.S)
+
+        def _link_sub(m: re.Match[str]) -> str:
+            attrs, inner = m.group(1), m.group(2)
+            hm = re.search(r"href=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
+            inner_clean = re.sub(r"<[^>]+>", "", inner).strip()
+            if hm:
+                href = hm.group(1)
+                if inner_clean == href:
+                    return href
+                return f"[{inner_clean}]({href})"
+            return inner_clean
+
+        f = re.sub(r"<a\b([^>]*)>(.*?)</a>", _link_sub, f, flags=re.I | re.S)
+        f = re.sub(r"<[^>]+>", "", f)
+        f = html_mod.unescape(f).replace("\xa0", " ").strip()
+        return f
+
+    def _replace_table(m: re.Match[str]) -> str:
+        tbody = m.group(0)
+        rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", tbody, flags=re.I | re.S)
+        if not rows:
+            return ""
+        md_rows: list[str] = []
+        for r_idx, r_html in enumerate(rows):
+            cells = re.findall(r"<(th|td)\b[^>]*>(.*?)</\1>", r_html, flags=re.I | re.S)
+            if not cells:
+                continue
+            cleaned_cells = [_clean_inline(c[1]).replace("|", "\\|") for c in cells]
+            md_rows.append("| " + " | ".join(cleaned_cells) + " |")
+            if r_idx == 0:
+                md_rows.append("| " + " | ".join(["---"] * len(cleaned_cells)) + " |")
+        return "\n\n" + "\n".join(md_rows) + "\n\n"
+
+    s = re.sub(r"<table\b[^>]*>.*?</table>", _replace_table, s, flags=re.I | re.S)
+
+    for level in range(1, 7):
+        hashes = "#" * level
+        s = re.sub(
+            rf"<h{level}\b[^>]*>(.*?)</h{level}>",
+            lambda m, h=hashes: f"\n\n{h} {_clean_inline(m.group(1))}\n\n",
+            s,
+            flags=re.I | re.S,
+        )
+
+    s = re.sub(r"<hr\s*/?>", "\n\n---\n\n", s, flags=re.I)
+
+    def _replace_blockquote(m: re.Match[str]) -> str:
+        inner = m.group(1)
+        inner = re.sub(r"</?(div|p)\b[^>]*>", "\n", inner, flags=re.I)
+        inner = re.sub(r"<br\s*/?>", "\n", inner, flags=re.I)
+        lines = [f"> {_clean_inline(ln)}" for ln in inner.splitlines() if _clean_inline(ln)]
+        return "\n\n" + "\n".join(lines) + "\n\n"
+
+    s = re.sub(r"<blockquote\b[^>]*>(.*?)</blockquote>", _replace_blockquote, s, flags=re.I | re.S)
+
+    def _replace_ul(m: re.Match[str]) -> str:
+        items = re.findall(r"<li(\s[^>]*)?>(.*?)</li>", m.group(1), flags=re.I | re.S)
+        out: list[str] = []
+        for attrs, item_html in items:
+            checked_m = re.search(r"data-checked=[\"\x27](true|false)[\"\x27]", attrs or "", re.I)
+            prefix = "- "
+            if checked_m:
+                prefix = "- [x] " if checked_m.group(1).lower() == "true" else "- [ ] "
+            out.append(f"{prefix}{_clean_inline(item_html)}")
+        return "\n\n" + "\n".join(out) + "\n\n"
+
+    def _replace_ol(m: re.Match[str]) -> str:
+        items = re.findall(r"<li\b[^>]*>(.*?)</li>", m.group(1), flags=re.I | re.S)
+        out = [f"{i + 1}. {_clean_inline(item_html)}" for i, item_html in enumerate(items)]
+        return "\n\n" + "\n".join(out) + "\n\n"
+
+    for _ in range(2):
+        s = re.sub(r"<ul\b[^>]*>(.*?)</ul>", _replace_ul, s, flags=re.I | re.S)
+        s = re.sub(r"<ol\b[^>]*>(.*?)</ol>", _replace_ol, s, flags=re.I | re.S)
+
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = re.sub(r"</(div|p)>", "\n\n", s, flags=re.I)
+    s = re.sub(r"<(div|p)\b[^>]*>", "", s, flags=re.I)
+
+    s = re.sub(
+        r"<code\b[^>]*>(.*?)</code>",
+        lambda m: "`" + html_mod.unescape(re.sub(r"<[^>]+>", "", m.group(1))) + "`",
+        s,
+        flags=re.I | re.S,
+    )
+    s = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f"{s}", flags=re.I | re.S)
+    s = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
+    s = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", s, flags=re.I | re.S)
+
+    def _link_sub2(m: re.Match[str]) -> str:
+        attrs, inner = m.group(1), m.group(2)
+        hm = re.search(r"href=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
+        inner_clean = re.sub(r"<[^>]+>", "", inner).strip()
+        if hm:
+            href = hm.group(1)
+            if inner_clean == href:
+                return href
+            return f"[{inner_clean}]({href})"
+        return inner_clean
+
+    s = re.sub(r"<a\b([^>]*)>(.*?)</a>", _link_sub2, s, flags=re.I | re.S)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = html_mod.unescape(s).replace("\xa0", " ")
+
+    for idx, block in enumerate(pre_blocks):
+        s = s.replace(f"@@PRE_BLOCK_{idx}@@", block)
+
+    s = re.sub(r"\n{3,}", "\n\n", s).strip()
+    return strip_duplicate_leading_title(s, title)
 
 
 def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
@@ -804,14 +989,15 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
         primary_tag = all_tags[0] if all_tags else None
         extra_tags = all_tags[1:] if len(all_tags) > 1 else []
 
-        body_text = req.text or ""
+        clean_title = req.title.replace("\xa0", " ").strip()
+        body_text = strip_duplicate_leading_title(req.text or "", clean_title)
         if extra_tags and req.markdown:
             anchors = " ".join(build_hashtag_anchor_html(t) for t in extra_tags)
             body_text = f"{body_text}\n\n{anchors}" if body_text else anchors
 
         query_params: dict[str, str] = {
             "spaceId": deeplink_space_id,
-            "title": req.title,
+            "title": clean_title,
             "markdown": "true" if req.markdown else "false",
         }
         if body_text:
@@ -829,12 +1015,11 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
         dispatch_deeplink(url)
 
         created_id: str | None = None
-        for _ in range(30):
-            time.sleep(0.25)
+        for _ in range(100):
+            time.sleep(0.05)
             with get_db_connection(readonly=True) as conn:
                 rows = conn.execute(
-                    "SELECT id FROM notes WHERE title = ? ORDER BY createdAt DESC LIMIT 5",
-                    (req.title,),
+                    "SELECT id FROM notes ORDER BY createdAt DESC LIMIT 5"
                 ).fetchall()
                 for r in rows:
                     if r["id"] not in before_ids:
@@ -846,10 +1031,10 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
         if not created_id:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Dispatched note/new to UpNote, but the new note did not appear in SQLite within 7.5s.",
+                detail="Dispatched note/new to UpNote, but the new note did not appear in SQLite within 5.0s.",
             )
 
-        time.sleep(0.3)
+        time.sleep(0.05)
         with get_db_connection(readonly=True) as conn:
             spaces_map = load_spaces_map(conn)
             _, note_to_notebooks = load_notebooks_index(conn)
@@ -1457,6 +1642,13 @@ def get_note(
             (note_id_or_title,),
         ).fetchone()
         if row:
+            if row["trashed"] == 1 and row["title"]:
+                active_replacement = conn.execute(
+                    "SELECT * FROM notes WHERE title = ? AND trashed = 0 AND deleted = 0 ORDER BY updatedAt DESC LIMIT 1",
+                    (row["title"],),
+                ).fetchone()
+                if active_replacement:
+                    row = active_replacement
             return row_to_note_out(row, spaces_map, note_to_notebooks, include_content=True)
 
         matches = list_notes(
@@ -1549,12 +1741,10 @@ def update_note(note_id: str, req: NoteUpdateRequest) -> NoteOut:
 
     target_title = req.title if req.title is not None else existing.title
     if req.text is not None:
-        target_text = req.text
+        target_text = strip_duplicate_leading_title(req.text, target_title)
     else:
-        raw_text = existing.text or ""
-        if raw_text.startswith(existing.title + "\n"):
-            raw_text = raw_text[len(existing.title) + 1 :]
-        target_text = raw_text
+        raw_text = existing.markdown or html_to_markdown(existing.html, existing.title) or existing.text or ""
+        target_text = strip_duplicate_leading_title(raw_text, target_title)
 
     target_space = req.space if req.space is not None else existing.space_id
     target_notebook = (
@@ -1579,10 +1769,22 @@ def update_note(note_id: str, req: NoteUpdateRequest) -> NoteOut:
         )
     )
 
-    dispatch_deeplink(
-        f"upnote://x-callback-url/note/moveToTrash?noteId={urllib.parse.quote(existing.id)}"
-    )
-    time.sleep(0.3)
+    ids_to_trash: list[str] = [existing.id]
+    with get_db_connection(readonly=True) as conn:
+        dup_rows = conn.execute(
+            "SELECT id FROM notes WHERE title = ? AND trashed = 0 AND deleted = 0 AND id != ?",
+            (target_title, new_note.id),
+        ).fetchall()
+        for dr in dup_rows:
+            if dr["id"] not in ids_to_trash:
+                ids_to_trash.append(dr["id"])
+
+    for tid in ids_to_trash:
+        if tid != new_note.id:
+            dispatch_deeplink(
+                f"upnote://x-callback-url/note/moveToTrash?noteId={urllib.parse.quote(tid)}"
+            )
+            time.sleep(0.05)
     return new_note
 
 
@@ -1595,7 +1797,17 @@ def delete_note(
     ),
 ) -> dict[str, Any]:
     """Move a note to Trash (synced to UpNote Cloud) or permanently mark it deleted."""
-    existing = get_note(note_id)
+    with get_db_connection(readonly=True) as conn:
+        spaces_map = load_spaces_map(conn)
+        _, note_to_notebooks = load_notebooks_index(conn)
+        row = conn.execute(
+            "SELECT * FROM notes WHERE id = ? AND deleted = 0",
+            (note_id,),
+        ).fetchone()
+        if row:
+            existing = row_to_note_out(row, spaces_map, note_to_notebooks, include_content=False)
+        else:
+            existing = get_note(note_id)
     if permanent:
         with get_db_connection(readonly=False) as conn:
             conn.execute(
