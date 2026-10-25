@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-APP_VERSION = "0.1.2"
+APP_VERSION = "0.2.0"
 GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
