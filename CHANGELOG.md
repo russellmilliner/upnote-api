@@ -2,6 +2,18 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.0](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.0) — 2026-10-25
+
+### Changes
+- feat(mcp): add native Model Context Protocol server (upnote-mcp) and bump to v0.2.0 (dd57dfb)
+- chore(deps): update dependencies (fastapi 0.162.0) (a8d4bf1)
+
+### 📦 Bumped Dependencies (1 package)
+
+| Package | Previous | Updated | Scope |
+| :--- | :--- | :--- | :--- |
+| `fastapi` | `0.161.1` | **`0.162.0`** | Direct (`pyproject.toml`) |
+
 ## [v0.1.2-deps](https://github.com/russellmilliner/upnote-api/releases/tag/v0.1.2-deps) — 2026-10-24
 
 ### 📦 Bumped Dependencies (1 package)

@@ -12,7 +12,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "0.1.2"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/v1/status": {
@@ -2169,12 +2169,12 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.1.2"
+            "default": "0.2.0"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.1.2"
+            "default": "0.2.0"
           },
           "update_available": {
             "type": "boolean",
@@ -2320,12 +2320,12 @@
           "current_version": {
             "type": "string",
             "title": "Current Version",
-            "default": "0.1.2"
+            "default": "0.2.0"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.1.2"
+            "default": "0.2.0"
           },
           "update_available": {
             "type": "boolean",
@@ -2378,7 +2378,7 @@
           "previous_version": {
             "type": "string",
             "title": "Previous Version",
-            "default": "0.1.2"
+            "default": "0.2.0"
           },
           "installed_version": {
             "type": "string",
