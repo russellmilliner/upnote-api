@@ -2,6 +2,14 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.4](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.4) — 2026-10-28
+
+### Highlights
+- Block cross-site writes (Origin/Sec-Fetch-Site) and DNS rebinding (Host allowlist), require release checksums, remove /tmp glob fallback, strict new-note matching (no wrong-note trashing), cloud_replace trashes only the updated note (opt-in dedupe), 409 guard on offline SQLite writes, fix HTTP 500 on tag route and title lookups, minimal /health, 19 tests
+
+### Commits
+- fix(security,integrity): block cross-site writes and DNS rebinding, require update checksums, drop /tmp glob, strict new-note matching, opt-in dedupe, guard offline SQLite writes, fix Query-default 500s, expand tests to 19 (97e63b7)
+
 ## [v0.2.3](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.3) — 2026-10-28
 
 ## [v0.2.2](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.2) — 2026-10-28

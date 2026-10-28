@@ -12,9 +12,33 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "0.2.3"
+    "version": "0.2.4"
   },
   "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Minimal unauthenticated liveness check",
+        "description": "Return a minimal liveness payload (no paths, PIDs, or store counts).",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "tags": [
@@ -23,28 +47,6 @@
         "summary": "Get UpNote service and store status",
         "description": "Return service health, UpNote process status, and store item counts.",
         "operationId": "get_status_api_v1_status_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StatusOut"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/health": {
-      "get": {
-        "tags": [
-          "System"
-        ],
-        "summary": "Health check",
-        "description": "Return service health, UpNote process status, and store item counts.",
-        "operationId": "get_status_health_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1191,11 +1193,23 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite",
+              "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 directly in SQLite (offline-only; requires UpNote to be stopped or force=true)",
               "default": false,
               "title": "Permanent"
             },
-            "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite"
+            "description": "If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 directly in SQLite (offline-only; requires UpNote to be stopped or force=true)"
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Allow permanent=true while UpNote is running (unsafe: may be overwritten / not synced)",
+              "default": false,
+              "title": "Force"
+            },
+            "description": "Allow permanent=true while UpNote is running (unsafe: may be overwritten / not synced)"
           }
         ],
         "responses": {
@@ -1837,6 +1851,18 @@
               }
             ],
             "title": "Html"
+          },
+          "redirected_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirected From",
+            "description": "Set when the requested id was a trashed revision and the newest active note with the same title in the same space was returned instead."
           }
         },
         "type": "object",
@@ -1974,8 +2000,20 @@
               "sqlite_direct"
             ],
             "title": "Strategy",
-            "description": "'cloud_replace' creates a synced replacement note via UpNote x-callback-url and moves the old revision to trash so UpNote Cloud syncs immediately; 'sqlite_direct' updates the row in-place in upnote.sqlite3.",
+            "description": "'cloud_replace' creates a synced replacement note via UpNote x-callback-url and moves the old revision to trash so UpNote Cloud syncs immediately; 'sqlite_direct' updates the row in-place in upnote.sqlite3 (offline-only).",
             "default": "cloud_replace"
+          },
+          "dedupe": {
+            "type": "boolean",
+            "title": "Dedupe",
+            "description": "cloud_replace only: also trash other active notes with the same title in the same space AND same notebook(s). Off by default so unrelated notes are never touched.",
+            "default": false
+          },
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "description": "sqlite_direct only: allow writing while UpNote is running (unsafe).",
+            "default": false
           }
         },
         "type": "object",
@@ -2180,12 +2218,12 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.2.3"
+            "default": "0.2.4"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.2.3"
+            "default": "0.2.4"
           },
           "update_available": {
             "type": "boolean",
@@ -2331,12 +2369,12 @@
           "current_version": {
             "type": "string",
             "title": "Current Version",
-            "default": "0.2.3"
+            "default": "0.2.4"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.2.3"
+            "default": "0.2.4"
           },
           "update_available": {
             "type": "boolean",
@@ -2400,7 +2438,7 @@
           "previous_version": {
             "type": "string",
             "title": "Previous Version",
-            "default": "0.2.3"
+            "default": "0.2.4"
           },
           "installed_version": {
             "type": "string",

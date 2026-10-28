@@ -1,6 +1,6 @@
 # UpNote Local Store & Deep-Link REST API — OpenAPI / Swagger Reference
 
-- **Version:** `v0.2.3`
+- **Version:** `v0.2.4`
 - **OpenAPI Version:** `3.1.0`
 - **Interactive Swagger UI:** `http://127.0.0.1:8765/docs`
 - **Interactive ReDoc UI:** `http://127.0.0.1:8765/redoc`
@@ -17,8 +17,8 @@ Full REST API for querying, searching, creating, updating, tagging, and managing
 
 | Tag | Method | Path | Summary |
 | :--- | :--- | :--- | :--- |
+| **System** | `GET` | `/health` | Minimal unauthenticated liveness check |
 | **System** | `GET` | `/api/v1/status` | Get UpNote service and store status |
-| **System** | `GET` | `/health` | Health check |
 | **System** | `GET` | `/api/v1/update` | Check GitHub Releases for a newer UpNote REST API version |
 | **System** | `POST` | `/api/v1/update/install` | Download and install the latest UpNote REST API release from GitHub |
 | **System** | `POST` | `/api/v1/app/launch` | Ensure UpNote desktop app is running |
@@ -45,13 +45,13 @@ Full REST API for querying, searching, creating, updating, tagging, and managing
 
 ## Detailed Endpoint Reference
 
-### `GET /api/v1/status` — Get UpNote service and store status
+### `GET /health` — Minimal unauthenticated liveness check
 
 - **Category:** `System`
 
-Return service health, UpNote process status, and store item counts.
+Return a minimal liveness payload (no paths, PIDs, or store counts).
 
-### `GET /health` — Health check
+### `GET /api/v1/status` — Get UpNote service and store status
 
 - **Category:** `System`
 
@@ -280,7 +280,8 @@ Move a note to Trash (synced to UpNote Cloud) or permanently mark it deleted.
 | Name | In | Type | Required | Description |
 | :--- | :--- | :--- | :---: | :--- |
 | `note_id` | `path` | `string` | Yes |  |
-| `permanent` | `query` | `boolean` | No | If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite |
+| `permanent` | `query` | `boolean` | No | If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 directly in SQLite (offline-only; requires UpNote to be stopped or force=true) |
+| `force` | `query` | `boolean` | No | Allow permanent=true while UpNote is running (unsafe: may be overwritten / not synced) |
 
 ### `POST /api/v1/notes/{note_id}/restore` — Restore a trashed note
 
@@ -402,6 +403,7 @@ List file attachments tracked in the UpNote store.
 | `text` | `string / null` | No | — |  |
 | `markdown` | `string / null` | No | — |  |
 | `html` | `string / null` | No | — |  |
+| `redirected_from` | `string / null` | No | — | Set when the requested id was a trashed revision and the newest active note with the same title in the same space was returned instead. |
 
 ### Schema: `NoteUpdateRequest`
 
@@ -417,7 +419,9 @@ List file attachments tracked in the UpNote store.
 | `tags` | `array / null` | No | — | List of tags to set |
 | `pinned` | `boolean / null` | No | — | Pin or unpin note |
 | `bookmarked` | `boolean / null` | No | — | Bookmark or unbookmark note |
-| `strategy` | `string` | No | `"cloud_replace"` | 'cloud_replace' creates a synced replacement note via UpNote x-callback-url and moves the old revision to trash so UpNote Cloud syncs immediately; 'sqlite_direct' updates the row in-place in upnote.sqlite3. |
+| `strategy` | `string` | No | `"cloud_replace"` | 'cloud_replace' creates a synced replacement note via UpNote x-callback-url and moves the old revision to trash so UpNote Cloud syncs immediately; 'sqlite_direct' updates the row in-place in upnote.sqlite3 (offline-only). |
+| `dedupe` | `boolean` | No | `false` | cloud_replace only: also trash other active notes with the same title in the same space AND same notebook(s). Off by default so unrelated notes are never touched. |
+| `force` | `boolean` | No | `false` | sqlite_direct only: allow writing while UpNote is running (unsafe). |
 
 ### Schema: `NotebookCreateRequest`
 
@@ -469,8 +473,8 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `version` | `string` | No | `"0.2.3"` |  |
-| `latest_version` | `string` | No | `"0.2.3"` |  |
+| `version` | `string` | No | `"0.2.4"` |  |
+| `latest_version` | `string` | No | `"0.2.4"` |  |
 | `update_available` | `boolean` | No | `false` |  |
 | `release_url` | `string / null` | No | — |  |
 | `db_path` | `string` | Yes | — |  |
@@ -499,8 +503,8 @@ List file attachments tracked in the UpNote store.
 
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
-| `current_version` | `string` | No | `"0.2.3"` |  |
-| `latest_version` | `string` | No | `"0.2.3"` |  |
+| `current_version` | `string` | No | `"0.2.4"` |  |
+| `latest_version` | `string` | No | `"0.2.4"` |  |
 | `update_available` | `boolean` | No | `false` |  |
 | `release_url` | `string` | No | `"https://github.com/russellmilliner/upnote-api/releases"` |  |
 | `download_url` | `string / null` | No | — |  |
@@ -513,7 +517,7 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `previous_version` | `string` | No | `"0.2.3"` |  |
+| `previous_version` | `string` | No | `"0.2.4"` |  |
 | `installed_version` | `string` | Yes | — |  |
 | `release_url` | `string` | Yes | — |  |
 | `message` | `string` | Yes | — |  |
