@@ -12,7 +12,7 @@
       "name": "Apache 2.0",
       "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
     },
-    "version": "0.2.4"
+    "version": "0.2.5"
   },
   "paths": {
     "/health": {
@@ -2218,12 +2218,12 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "default": "0.2.4"
+            "default": "0.2.5"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.2.4"
+            "default": "0.2.5"
           },
           "update_available": {
             "type": "boolean",
@@ -2369,12 +2369,12 @@
           "current_version": {
             "type": "string",
             "title": "Current Version",
-            "default": "0.2.4"
+            "default": "0.2.5"
           },
           "latest_version": {
             "type": "string",
             "title": "Latest Version",
-            "default": "0.2.4"
+            "default": "0.2.5"
           },
           "update_available": {
             "type": "boolean",
@@ -2408,6 +2408,17 @@
             ],
             "title": "Sha256 Url"
           },
+          "sig_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sig Url"
+          },
           "release_notes": {
             "type": "string",
             "title": "Release Notes",
@@ -2438,7 +2449,7 @@
           "previous_version": {
             "type": "string",
             "title": "Previous Version",
-            "default": "0.2.4"
+            "default": "0.2.5"
           },
           "installed_version": {
             "type": "string",

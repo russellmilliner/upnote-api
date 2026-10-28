@@ -2,6 +2,14 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.5](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.5) — 2026-10-28
+
+### Highlights
+- html_to_markdown: linear time on all inputs; fixes silent loss of text after escaped '<' (e.g. table rows with '(<61)', '<X.Y.Z>', 'Vec<T>') that updates were baking into notes; correct nested lists; no double-decoding of entities. Releases are now signed (OpenSSH Ed25519, namespace upnote-api-release) and self-update requires a valid signature.
+
+### Commits
+- fix(converter,security): linear-time html_to_markdown, stop destroying text after escaped '<', correct nested lists, sign releases (OpenSSH Ed25519) and require signatures on self-update (8d16ea1)
+
 ## [v0.2.4](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.4) — 2026-10-28
 
 ### Highlights

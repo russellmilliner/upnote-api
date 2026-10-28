@@ -1,6 +1,6 @@
 # UpNote Local Store & Deep-Link REST API — OpenAPI / Swagger Reference
 
-- **Version:** `v0.2.4`
+- **Version:** `v0.2.5`
 - **OpenAPI Version:** `3.1.0`
 - **Interactive Swagger UI:** `http://127.0.0.1:8765/docs`
 - **Interactive ReDoc UI:** `http://127.0.0.1:8765/redoc`
@@ -473,8 +473,8 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `version` | `string` | No | `"0.2.4"` |  |
-| `latest_version` | `string` | No | `"0.2.4"` |  |
+| `version` | `string` | No | `"0.2.5"` |  |
+| `latest_version` | `string` | No | `"0.2.5"` |  |
 | `update_available` | `boolean` | No | `false` |  |
 | `release_url` | `string / null` | No | — |  |
 | `db_path` | `string` | Yes | — |  |
@@ -503,12 +503,13 @@ List file attachments tracked in the UpNote store.
 
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
-| `current_version` | `string` | No | `"0.2.4"` |  |
-| `latest_version` | `string` | No | `"0.2.4"` |  |
+| `current_version` | `string` | No | `"0.2.5"` |  |
+| `latest_version` | `string` | No | `"0.2.5"` |  |
 | `update_available` | `boolean` | No | `false` |  |
 | `release_url` | `string` | No | `"https://github.com/russellmilliner/upnote-api/releases"` |  |
 | `download_url` | `string / null` | No | — |  |
 | `sha256_url` | `string / null` | No | — |  |
+| `sig_url` | `string / null` | No | — |  |
 | `release_notes` | `string` | No | `""` |  |
 | `checked_at` | `number / null` | No | — |  |
 
@@ -517,7 +518,7 @@ List file attachments tracked in the UpNote store.
 | Field | Type | Required | Default | Description |
 | :--- | :--- | :---: | :--- | :--- |
 | `ok` | `boolean` | No | `true` |  |
-| `previous_version` | `string` | No | `"0.2.4"` |  |
+| `previous_version` | `string` | No | `"0.2.5"` |  |
 | `installed_version` | `string` | Yes | — |  |
 | `release_url` | `string` | Yes | — |  |
 | `message` | `string` | Yes | — |  |
