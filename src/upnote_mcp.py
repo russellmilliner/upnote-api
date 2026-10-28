@@ -14,7 +14,7 @@ from typing import Any
 import requests
 from mcp.server.mcpserver import MCPServer
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 UPNOTE_API_URL = os.getenv("UPNOTE_API_URL", "http://127.0.0.1:8765").rstrip("/")
 UPNOTE_API_TOKEN = os.getenv("UPNOTE_API_TOKEN", "").strip()
 

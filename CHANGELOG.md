@@ -2,6 +2,14 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.3](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.3) — 2026-10-28
+
+### Highlights
+- Security hardening (CORS, UID/mount verification, SHA-256 + PEP 706 tarfile filter, x-callback-url sanitization, optional API token), cross-space duplicate isolation, inline code HTML-to-Markdown preservation, SQLite query optimization, and pytest suite
+
+### Commits
+- fix(security,core): harden security, isolate cross-space updates, preserve inline code HTML, optimize SQLite queries, and add pytest suite (214ec55)
+
 ## [v0.2.2](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.2) — 2026-10-28
 
 ### Highlights

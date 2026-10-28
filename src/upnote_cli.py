@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 BASE_URL = os.environ.get("UPNOTE_API_URL", "http://127.0.0.1:8765")
 API_TOKEN = os.environ.get("UPNOTE_API_TOKEN", "").strip()
 GITHUB_REPO = "russellmilliner/upnote-api"
