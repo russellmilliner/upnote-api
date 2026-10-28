@@ -515,7 +515,7 @@ def ensure_upnote_running() -> tuple[int, str, dict[str, str]]:
 
     if LAUNCH_SCRIPT_PATH.exists():
         subprocess.Popen(
-            [str(LAUNCH_SCRIPT_PATH)],
+            [str(LAUNCH_SCRIPT_PATH), "--auto-start-in-background"],
             env=launch_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -545,8 +545,24 @@ def ensure_upnote_running() -> tuple[int, str, dict[str, str]]:
     )
 
 
-def dispatch_deeplink(url: str) -> None:
-    """Invoke UpNote with an upnote://x-callback-url/... deep link."""
+def dispatch_deeplink(url: str, background: bool = True) -> None:
+    """
+    Invoke UpNote with an upnote://x-callback-url/... deep link.
+
+    When `background=True` (default for all API write/CRUD operations), appends
+    `_bg_new_window=true` to the query string if `new_window=true` is not already
+    present. UpNote's Electron main process (`dist/electron/main.js`) checks
+    `!url.toLowerCase().includes('new_window=true')` before calling `mainWindow.show()`,
+    while the renderer (`dist/electron/renderer.js`) checks
+    `searchParams.get('new_window')?.toLowerCase() === 'true'` before opening a
+    detail window. Passing `_bg_new_window=true` suppresses `mainWindow.show()`
+    (preventing UpNote from popping up or stealing desktop focus) without opening
+    a secondary note window.
+    """
+    if background and "new_window=true" not in url.lower():
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}_bg_new_window=true"
+
     _, binary, env = ensure_upnote_running()
     exec_env = os.environ.copy()
     exec_env.update(env)
@@ -1242,7 +1258,7 @@ def open_in_upnote_ui(req: DeepLinkOpenRequest) -> dict[str, Any]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Provide one of 'url', 'note_id', 'notebook_id', or 'tag'.",
         )
-    dispatch_deeplink(url)
+    dispatch_deeplink(url, background=False)
     return {"dispatched": True, "url": url}
 
 
