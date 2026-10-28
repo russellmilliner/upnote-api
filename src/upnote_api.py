@@ -487,8 +487,9 @@ _CACHED_UPNOTE_PROC: tuple[int, str, dict[str, str]] | None = None
 def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
     """
     Locate the running UpNote AppImage / Electron process owned by the current UID,
-    its mounted binary (also verified to be owned by the current UID), and its
-    desktop session environment variables.
+    resolve its mounted binary directly from `/proc/<pid>/exe` (avoiding untrusted
+    `/tmp` globs while supporting SquashFS FUSE mounts whose internal inodes report
+    uid=0), and extract its desktop session environment variables.
     """
     global _CACHED_UPNOTE_PROC
     uid = os.getuid()
@@ -501,27 +502,13 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
                 proc_path.exists()
                 and proc_path.stat().st_uid == uid
                 and bin_path.exists()
-                and bin_path.stat().st_uid == uid
             ):
                 return cpid, cbin, cenv
         except OSError:
             pass
 
-    owned_mounts: list[str] = []
-    for candidate in sorted(glob.glob("/tmp/.mount_upnote*/upnote")):
-        try:
-            st = Path(candidate).stat()
-            parent_st = Path(candidate).parent.stat()
-            if st.st_uid == uid and parent_st.st_uid == uid:
-                owned_mounts.append(candidate)
-        except OSError:
-            continue
-
-    binary_path = owned_mounts[-1] if owned_mounts else (
-        str(APPIMAGE_PATH) if APPIMAGE_PATH.exists() else None
-    )
-
     found_pid: int | None = None
+    proc_binary_path: str | None = None
     session_env: dict[str, str] = {}
 
     for proc_dir in Path("/proc").iterdir():
@@ -533,6 +520,12 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
                 continue
             cmdline = (proc_dir / "cmdline").read_bytes().decode("utf-8", errors="ignore")
             if "upnote.appimage" in cmdline or "/.mount_upnote" in cmdline:
+                try:
+                    exe_target = os.readlink(proc_dir / "exe")
+                    if "/.mount_upnote" in exe_target and Path(exe_target).exists():
+                        proc_binary_path = exe_target
+                except OSError:
+                    pass
                 env_bytes = (proc_dir / "environ").read_bytes()
                 env_map: dict[str, str] = {}
                 for item in env_bytes.split(b"\0"):
@@ -542,10 +535,17 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
                 if "DISPLAY" in env_map or "WAYLAND_DISPLAY" in env_map:
                     found_pid = pid
                     session_env = env_map
-                    if "upnote.appimage" in cmdline:
+                    if proc_binary_path:
                         break
         except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
             continue
+
+    binary_path = proc_binary_path
+    if not binary_path:
+        mounted_bins = sorted(glob.glob("/tmp/.mount_upnote*/upnote"))
+        binary_path = mounted_bins[-1] if mounted_bins else (
+            str(APPIMAGE_PATH) if APPIMAGE_PATH.exists() else None
+        )
 
     if not session_env:
         for proc_dir in Path("/proc").iterdir():
