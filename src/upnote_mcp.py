@@ -1,4 +1,4 @@
-#!/home/millinr/.local/share/agy-mcp/.venv/bin/python
+#!/usr/bin/env python3
 """UpNote Model Context Protocol (MCP) Server (`upnote-mcp`).
 
 Provides native MCP tools wrapping the local `upnote-api` FastAPI service
@@ -37,6 +37,8 @@ def _clean_note_summary(n: dict[str, Any], include_content: bool = False) -> dic
         "synced": n.get("synced", False),
         "updated_at": n.get("updated_at"),
     }
+    if n.get("redirected_from"):
+        out["redirected_from"] = n["redirected_from"]
     if include_content:
         out["text"] = n.get("markdown") or n.get("text")
     return out

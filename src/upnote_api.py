@@ -12,10 +12,10 @@ Electron deep-link interface.
 from __future__ import annotations
 
 import argparse
-import glob
 import hashlib
 import html as html_mod
 import json
+import logging
 import os
 import re
 import secrets
@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal
+from typing import Annotated, Any, AsyncIterator, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
@@ -81,10 +81,22 @@ CORS_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+ALLOWED_HOSTS = frozenset(
+    h.strip().lower()
+    for h in os.environ.get(
+        "UPNOTE_ALLOWED_HOSTS",
+        "127.0.0.1,localhost,::1",
+    ).split(",")
+    if h.strip()
+)
+# Allow skipping the release checksum only by explicit opt-out (not recommended).
+REQUIRE_UPDATE_CHECKSUM = os.environ.get("UPNOTE_REQUIRE_UPDATE_CHECKSUM", "1") != "0"
+
+logger = logging.getLogger("upnote_api")
 
 # Lock to serialize deep-link dispatches so rapid concurrent creations can be
 # matched deterministically in SQLite.
-_DEEPLINK_LOCK = threading.Lock()
+_DEEPLINK_LOCK = threading.RLock()
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +181,13 @@ class NoteOut(BaseModel):
     text: str | None = None
     markdown: str | None = None
     html: str | None = None
+    redirected_from: str | None = Field(
+        default=None,
+        description=(
+            "Set when the requested id was a trashed revision and the newest active note "
+            "with the same title in the same space was returned instead."
+        ),
+    )
 
 
 class NoteCreateRequest(BaseModel):
@@ -219,8 +238,19 @@ class NoteUpdateRequest(BaseModel):
         description=(
             "'cloud_replace' creates a synced replacement note via UpNote x-callback-url "
             "and moves the old revision to trash so UpNote Cloud syncs immediately; "
-            "'sqlite_direct' updates the row in-place in upnote.sqlite3."
+            "'sqlite_direct' updates the row in-place in upnote.sqlite3 (offline-only)."
         ),
+    )
+    dedupe: bool = Field(
+        default=False,
+        description=(
+            "cloud_replace only: also trash other active notes with the same title in the "
+            "same space AND same notebook(s). Off by default so unrelated notes are never touched."
+        ),
+    )
+    force: bool = Field(
+        default=False,
+        description="sqlite_direct only: allow writing while UpNote is running (unsafe).",
     )
 
 
@@ -367,6 +397,38 @@ def _background_update_check_loop() -> None:
         time.sleep(UPDATE_CHECK_INTERVAL_SECONDS)
 
 
+def verify_archive_sha256(archive_bytes: bytes, sha_text: str) -> None:
+    """Raise RuntimeError unless `sha_text` (sha256sum format) matches `archive_bytes`."""
+    parts = sha_text.strip().split()
+    expected = parts[0].lower() if parts else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise RuntimeError("Release checksum file is malformed.")
+    actual = hashlib.sha256(archive_bytes).hexdigest().lower()
+    if not secrets.compare_digest(expected, actual):
+        raise RuntimeError(
+            f"SHA-256 checksum mismatch for release archive (expected {expected}, got {actual})"
+        )
+
+
+
+def _mcp_python() -> str:
+    """Interpreter for the MCP server script (needs the `mcp` package; system python may lack it)."""
+    env_py = os.environ.get("UPNOTE_MCP_PYTHON", "").strip()
+    if env_py:
+        return env_py
+    venv_py = Path.home() / ".local" / "share" / "agy-mcp" / ".venv" / "bin" / "python"
+    return str(venv_py) if venv_py.exists() else "/usr/bin/env python3"
+
+
+def _install_mcp_script(src: Path, dst: Path) -> None:
+    """Copy upnote_mcp.py to `dst`, pinning its shebang to an interpreter that has `mcp`."""
+    lines = src.read_text(encoding="utf-8").splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        lines[0] = f"#!{_mcp_python()}\n"
+    dst.write_text("".join(lines), encoding="utf-8")
+    dst.chmod(0o755)
+
+
 def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut:
     """Download, verify, and install the latest GitHub release archive."""
     info = check_for_updates(timeout=15.0)
@@ -397,19 +459,23 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
             archive_bytes = resp.read()
             archive_path.write_bytes(archive_bytes)
 
-        if info.sha256_url and info.sha256_url.startswith(ALLOWED_DOWNLOAD_PREFIX):
+        sha_url_ok = bool(info.sha256_url) and str(info.sha256_url).startswith(ALLOWED_DOWNLOAD_PREFIX)
+        if not sha_url_ok:
+            if REQUIRE_UPDATE_CHECKSUM:
+                raise RuntimeError(
+                    "Release is missing a trusted .tar.gz.sha256 asset; refusing to install "
+                    "(set UPNOTE_REQUIRE_UPDATE_CHECKSUM=0 to override)."
+                )
+            logger.warning("Installing release without checksum verification (override enabled).")
+        else:
             sha_req = urllib.request.Request(
-                info.sha256_url,
+                str(info.sha256_url),
                 headers={"User-Agent": f"upnote-api/{APP_VERSION}"},
                 method="GET",
             )
             with urllib.request.urlopen(sha_req, timeout=15.0) as sha_resp:
-                expected_sha = sha_resp.read().decode("utf-8").strip().split()[0].lower()
-            actual_sha = hashlib.sha256(archive_bytes).hexdigest().lower()
-            if not secrets.compare_digest(expected_sha, actual_sha):
-                raise RuntimeError(
-                    f"SHA-256 checksum mismatch for release archive (expected {expected_sha}, got {actual_sha})"
-                )
+                sha_text = sha_resp.read().decode("utf-8")
+            verify_archive_sha256(archive_bytes, sha_text)
 
         with tarfile.open(archive_path, "r:gz") as tar:
             tar.extractall(path=tmp_path, filter="data")
@@ -440,8 +506,7 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
                 mcp_dir / "upnote_mcp.py",
                 bin_dir / "upnote-mcp",
             ):
-                shutil.copy2(extracted_mcp[0], mcp_target)
-                mcp_target.chmod(0o755)
+                _install_mcp_script(extracted_mcp[0], mcp_target)
 
         if restart_service:
             subprocess.Popen(
@@ -484,28 +549,35 @@ def get_db_connection(readonly: bool = True) -> sqlite3.Connection:
 _CACHED_UPNOTE_PROC: tuple[int, str, dict[str, str]] | None = None
 
 
+def _cached_proc_still_valid(cpid: int, cbin: str, uid: int) -> bool:
+    """A cached (pid, binary) is valid only if the pid is ours and still runs that binary."""
+    proc_path = Path(f"/proc/{cpid}")
+    try:
+        if not proc_path.exists() or proc_path.stat().st_uid != uid:
+            return False
+        if cbin == str(APPIMAGE_PATH):
+            return APPIMAGE_PATH.exists()
+        return os.readlink(proc_path / "exe") == cbin and Path(cbin).exists()
+    except OSError:
+        return False
+
+
 def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
     """
     Locate the running UpNote AppImage / Electron process owned by the current UID,
-    resolve its mounted binary directly from `/proc/<pid>/exe` (avoiding untrusted
-    `/tmp` globs while supporting SquashFS FUSE mounts whose internal inodes report
-    uid=0), and extract its desktop session environment variables.
+    resolve its mounted binary directly from `/proc/<pid>/exe` (never from a `/tmp`
+    glob, which another local user could plant; SquashFS FUSE mounts report uid=0 for
+    their inodes so ownership of the mount itself cannot be checked), and extract its
+    desktop session environment variables. Falls back only to the configured
+    `UPNOTE_APPIMAGE_PATH`.
     """
     global _CACHED_UPNOTE_PROC
     uid = os.getuid()
     if _CACHED_UPNOTE_PROC is not None:
         cpid, cbin, cenv = _CACHED_UPNOTE_PROC
-        proc_path = Path(f"/proc/{cpid}")
-        bin_path = Path(cbin)
-        try:
-            if (
-                proc_path.exists()
-                and proc_path.stat().st_uid == uid
-                and bin_path.exists()
-            ):
-                return cpid, cbin, cenv
-        except OSError:
-            pass
+        if _cached_proc_still_valid(cpid, cbin, uid):
+            return cpid, cbin, cenv
+        _CACHED_UPNOTE_PROC = None
 
     found_pid: int | None = None
     proc_binary_path: str | None = None
@@ -541,11 +613,8 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
             continue
 
     binary_path = proc_binary_path
-    if not binary_path:
-        mounted_bins = sorted(glob.glob("/tmp/.mount_upnote*/upnote"))
-        binary_path = mounted_bins[-1] if mounted_bins else (
-            str(APPIMAGE_PATH) if APPIMAGE_PATH.exists() else None
-        )
+    if not binary_path and APPIMAGE_PATH.exists():
+        binary_path = str(APPIMAGE_PATH)
 
     if not session_env:
         for proc_dir in Path("/proc").iterdir():
@@ -695,9 +764,10 @@ def dispatch_deeplink(url: str, background: bool = True) -> None:
             check=True,
         )
     except (subprocess.SubprocessError, OSError) as exc:
+        logger.exception("Deep-link dispatch failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to dispatch deep link to UpNote: {exc}",
+            detail="Failed to dispatch deep link to UpNote (see upnote-api.service logs).",
         ) from exc
 
 
@@ -1102,6 +1172,37 @@ def html_to_markdown(raw_html: str | None, title: str = "") -> str:
     return strip_duplicate_leading_title(s, title)
 
 
+def _normalize_title(title: str | None) -> str:
+    """Normalize a note title for equality checks (HTML entities, NBSP, whitespace runs)."""
+    t = html_mod.unescape(title or "").replace("\xa0", " ")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def match_created_note(
+    rows: list[sqlite3.Row] | list[dict[str, Any]],
+    before_ids: set[str],
+    title: str,
+    sqlite_space: str | None,
+) -> str | None:
+    """
+    Return the id of a row that is new (not in `before_ids`) AND matches `title` and
+    `sqlite_space`. Never falls back to an arbitrary new row: a concurrently cloud-synced
+    note from another device must not be mistaken for the note we just created, because
+    `update_note` trashes the original once a replacement is confirmed.
+    """
+    want_title = _normalize_title(title)
+    want_space = sqlite_space or ""
+    for r in rows:
+        if r["id"] in before_ids:
+            continue
+        if _normalize_title(r["title"]) != want_title:
+            continue
+        if (r["space"] or "") != want_space:
+            continue
+        return str(r["id"])
+    return None
+
+
 def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
     """
     Create a note via UpNote's `upnote://x-callback-url/note/new` handler and wait
@@ -1109,7 +1210,7 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
     """
     with _DEEPLINK_LOCK:
         with get_db_connection(readonly=True) as conn:
-            deeplink_space_id, _, _ = resolve_space(conn, req.space)
+            deeplink_space_id, sqlite_space_val, _ = resolve_space(conn, req.space)
             notebook_param: str | None = None
             if req.notebook:
                 resolved_nb = resolve_notebook(conn, req.notebook, space_id=deeplink_space_id)
@@ -1164,22 +1265,19 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
             time.sleep(0.05)
             with get_db_connection(readonly=True) as conn:
                 rows = conn.execute(
-                    "SELECT id, title FROM notes ORDER BY createdAt DESC LIMIT 10"
+                    "SELECT id, title, space FROM notes ORDER BY createdAt DESC LIMIT 25"
                 ).fetchall()
-                new_rows = [r for r in rows if r["id"] not in before_ids]
-                for r in new_rows:
-                    if (r["title"] or "").replace("\xa0", " ").strip() == clean_title:
-                        created_id = r["id"]
-                        break
-                if not created_id and new_rows:
-                    created_id = new_rows[0]["id"]
+                created_id = match_created_note(rows, before_ids, clean_title, sqlite_space_val)
                 if created_id:
                     break
 
         if not created_id:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Dispatched note/new to UpNote, but the new note did not appear in SQLite within 5.0s.",
+                detail=(
+                    "Dispatched note/new to UpNote, but no new note with a matching title and "
+                    "space appeared in SQLite within 5.0s. No existing notes were modified."
+                ),
             )
 
         time.sleep(0.05)
@@ -1269,26 +1367,83 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_AUTH_EXEMPT_PATHS = frozenset({"/health", "/docs", "/redoc", "/openapi.json"})
+
+
+def _request_hostname(host_header: str) -> str:
+    """Extract the lowercase hostname from a Host header (strips port, handles [IPv6])."""
+    h = host_header.strip().lower()
+    if h.startswith("["):
+        end = h.find("]")
+        return h[1:end] if end != -1 else h
+    if h.count(":") == 1:
+        return h.split(":", 1)[0]
+    return h
+
+
+def check_request_security(
+    method: str,
+    host_header: str,
+    origin: str | None,
+    sec_fetch_site: str | None,
+    path: str,
+    auth_header: str,
+    api_key_header: str,
+) -> tuple[int, str] | None:
+    """
+    Return `(status_code, detail)` if the request must be rejected, else `None`.
+
+    1. Host allowlist  -> blocks DNS-rebinding attacks (a hostile domain re-pointed at 127.0.0.1).
+    2. Origin / Sec-Fetch-Site on unsafe methods -> blocks cross-site "simple" requests
+       (e.g. `fetch(url, {method: "DELETE", mode: "no-cors"})`) that CORS alone never prevents.
+       Browsers always attach `Origin` to non-GET/HEAD requests; non-browser clients
+       (curl, upnote-cli, upnote-mcp) normally omit it and are unaffected.
+    3. Optional bearer / X-API-Key token when `UPNOTE_API_TOKEN` is set.
+    """
+    if _request_hostname(host_header) not in ALLOWED_HOSTS:
+        return (status.HTTP_400_BAD_REQUEST, "Invalid Host header.")
+
+    if method.upper() not in _SAFE_METHODS:
+        if sec_fetch_site and sec_fetch_site.lower() == "cross-site":
+            return (status.HTTP_403_FORBIDDEN, "Cross-site requests are not allowed.")
+        if origin and origin.rstrip("/") not in CORS_ORIGINS:
+            return (status.HTTP_403_FORBIDDEN, "Request origin is not allowed.")
+
+    if API_TOKEN and path not in _AUTH_EXEMPT_PATHS:
+        candidate = ""
+        if auth_header.lower().startswith("bearer "):
+            candidate = auth_header[7:].strip()
+        else:
+            candidate = api_key_header.strip()
+        if not candidate or not secrets.compare_digest(candidate, API_TOKEN):
+            return (status.HTTP_401_UNAUTHORIZED, "Invalid or missing API token.")
+    return None
+
 
 @app.middleware("http")
-async def _optional_token_auth(request: Request, call_next: Any) -> Any:
-    if not API_TOKEN or request.url.path in ("/health", "/docs", "/redoc", "/openapi.json"):
-        return await call_next(request)
-    auth_header = request.headers.get("Authorization", "")
-    candidate = ""
-    if auth_header.lower().startswith("bearer "):
-        candidate = auth_header[7:].strip()
-    else:
-        candidate = request.headers.get("X-API-Key", "").strip()
-    if not candidate or not secrets.compare_digest(candidate, API_TOKEN):
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Invalid or missing API token."},
-        )
+async def _security_middleware(request: Request, call_next: Any) -> Any:
+    rejection = check_request_security(
+        method=request.method,
+        host_header=request.headers.get("host", ""),
+        origin=request.headers.get("origin"),
+        sec_fetch_site=request.headers.get("sec-fetch-site"),
+        path=request.url.path,
+        auth_header=request.headers.get("authorization", ""),
+        api_key_header=request.headers.get("x-api-key", ""),
+    )
+    if rejection is not None:
+        code, detail = rejection
+        return JSONResponse(status_code=code, content={"detail": detail})
     return await call_next(request)
 
 
-@app.get("/health", response_model=StatusOut, tags=["System"], summary="Health check")
+@app.get("/health", tags=["System"], summary="Minimal unauthenticated liveness check")
+def health() -> dict[str, Any]:
+    """Return a minimal liveness payload (no paths, PIDs, or store counts)."""
+    return {"ok": True, "version": APP_VERSION}
+
+
 @app.get("/api/v1/status", response_model=StatusOut, tags=["System"], summary="Get UpNote service and store status")
 def get_status() -> StatusOut:
     """Return service health, UpNote process status, and store item counts."""
@@ -1356,9 +1511,10 @@ def get_update_status(
     try:
         return check_for_updates(timeout=10.0)
     except Exception as exc:
+        logger.exception("GitHub update check failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"GitHub update check failed: {exc}",
+            detail="GitHub update check failed (see upnote-api.service logs).",
         ) from exc
 
 
@@ -1373,9 +1529,10 @@ def install_update() -> UpdateInstallOut:
     try:
         return install_update_from_github(restart_service=True)
     except Exception as exc:
+        logger.exception("Self-update installation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Self-update installation failed: {exc}",
+            detail="Self-update installation failed (see upnote-api.service logs).",
         ) from exc
 
 
@@ -1593,7 +1750,7 @@ def create_notebook(req: NotebookCreateRequest) -> NotebookOut:
     """Create a new notebook in the target space via UpNote x-callback-url."""
     with _DEEPLINK_LOCK:
         with get_db_connection(readonly=True) as conn:
-            deeplink_space_id, _, _ = resolve_space(conn, req.space)
+            deeplink_space_id, sqlite_space_val, _ = resolve_space(conn, req.space)
             existing = resolve_notebook(conn, req.title, space_id=deeplink_space_id)
             if existing:
                 return existing
@@ -1705,32 +1862,37 @@ def list_tag_notes(
 # ---------------------------------------------------------------------------
 
 
+# NOTE: `list_notes` and `get_note` are also called directly from Python (by
+# `list_tag_notes`, `get_note`, `update_note`, `delete_note`, ...). Their parameters use
+# `Annotated[..., Query(...)] = <plain default>` so that direct calls receive real
+# defaults. With the older `param = Query(default=...)` style, omitted arguments are
+# FastAPI `Query` objects, which are truthy and non-None, and silently broke those calls
+# (e.g. `/api/v1/tags/{tag}/notes` and title lookups returned HTTP 500).
 @app.get("/api/v1/notes", response_model=list[NoteOut], tags=["Notes"], summary="Search and filter notes")
 def list_notes(
-    space: str | None = Query(
-        default=None, description="Filter by space name ('General', 'CHEP') or ID"
-    ),
-    notebook: str | None = Query(
-        default=None, description="Filter by notebook title (e.g. 'AI'), path, or UUID"
-    ),
-    tag: str | None = Query(
-        default=None, description="Filter by tag name (with or without '#', e.g. 'plex')"
-    ),
-    q: str | None = Query(
-        default=None, description="Full-text search query across note title and text"
-    ),
-    trashed: bool = Query(default=False, description="Whether to return trashed notes"),
-    pinned: bool | None = Query(default=None, description="Filter by pinned status"),
-    bookmarked: bool | None = Query(default=None, description="Filter by bookmarked status"),
-    has_todo: bool | None = Query(default=None, description="Filter notes containing todos"),
-    is_template: bool | None = Query(default=None, description="Filter template notes"),
-    unsynced: bool | None = Query(default=None, description="Filter unsynced notes"),
-    include_content: bool = Query(
-        default=False,
-        description="Include full 'text' and 'html' body in each returned note",
-    ),
-    limit: int = Query(default=50, ge=1, le=500, description="Maximum notes to return"),
-    offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    space: Annotated[
+        str | None, Query(description="Filter by space name ('General', 'CHEP') or ID")
+    ] = None,
+    notebook: Annotated[
+        str | None, Query(description="Filter by notebook title (e.g. 'AI'), path, or UUID")
+    ] = None,
+    tag: Annotated[
+        str | None, Query(description="Filter by tag name (with or without '#', e.g. 'plex')")
+    ] = None,
+    q: Annotated[
+        str | None, Query(description="Full-text search query across note title and text")
+    ] = None,
+    trashed: Annotated[bool, Query(description="Whether to return trashed notes")] = False,
+    pinned: Annotated[bool | None, Query(description="Filter by pinned status")] = None,
+    bookmarked: Annotated[bool | None, Query(description="Filter by bookmarked status")] = None,
+    has_todo: Annotated[bool | None, Query(description="Filter notes containing todos")] = None,
+    is_template: Annotated[bool | None, Query(description="Filter template notes")] = None,
+    unsynced: Annotated[bool | None, Query(description="Filter unsynced notes")] = None,
+    include_content: Annotated[
+        bool, Query(description="Include full 'text' and 'html' body in each returned note")
+    ] = False,
+    limit: Annotated[int, Query(ge=1, le=500, description="Maximum notes to return")] = 50,
+    offset: Annotated[int, Query(ge=0, description="Pagination offset")] = 0,
 ) -> list[NoteOut]:
     """Search and filter notes across spaces, notebooks, and tags."""
     with get_db_connection(readonly=True) as conn:
@@ -1808,8 +1970,12 @@ def list_notes(
 @app.get("/api/v1/notes/{note_id_or_title}", response_model=NoteOut, tags=["Notes"], summary="Get a single note by UUID or exact title")
 def get_note(
     note_id_or_title: str,
-    space: str | None = Query(default=None, description="Optional space filter when looking up by title"),
-    notebook: str | None = Query(default=None, description="Optional notebook filter when looking up by title"),
+    space: Annotated[
+        str | None, Query(description="Optional space filter when looking up by title")
+    ] = None,
+    notebook: Annotated[
+        str | None, Query(description="Optional notebook filter when looking up by title")
+    ] = None,
 ) -> NoteOut:
     """Get a single note (including full text and HTML) by UUID or exact title."""
     with get_db_connection(readonly=True) as conn:
@@ -1821,6 +1987,7 @@ def get_note(
             (note_id_or_title,),
         ).fetchone()
         if row:
+            redirected_from: str | None = None
             if row["trashed"] == 1 and row["title"]:
                 active_replacement = conn.execute(
                     "SELECT * FROM notes WHERE title = ? AND COALESCE(space, '') = COALESCE(?, '') "
@@ -1828,8 +1995,11 @@ def get_note(
                     (row["title"], row["space"]),
                 ).fetchone()
                 if active_replacement:
+                    redirected_from = row["id"]
                     row = active_replacement
-            return row_to_note_out(row, spaces_map, note_to_notebooks, include_content=True)
+            out = row_to_note_out(row, spaces_map, note_to_notebooks, include_content=True)
+            out.redirected_from = redirected_from
+            return out
 
         matches = list_notes(
             space=space,
@@ -1877,6 +2047,7 @@ def update_note(note_id: str, req: NoteUpdateRequest) -> NoteOut:
     existing = get_note(note_id)
 
     if req.strategy == "sqlite_direct":
+        _require_upnote_stopped(req.force, "strategy='sqlite_direct'")
         now_ms = float(int(time.time() * 1000))
         with get_db_connection(readonly=False) as conn:
             updates = ["updatedAt = ?", "synced = 0", "revision = COALESCE(revision, 0) + 1"]
@@ -1938,36 +2109,66 @@ def update_note(note_id: str, req: NoteUpdateRequest) -> NoteOut:
         else ([req.tag] if req.tag is not None else existing.tags)
     )
 
-    new_note = create_note_via_upnote(
-        NoteCreateRequest(
-            title=target_title,
-            text=target_text,
-            markdown=req.markdown,
-            space=target_space,
-            notebook=target_notebook,
-            tags=target_tags,
-        )
-    )
-
-    ids_to_trash: list[str] = [existing.id]
-    with get_db_connection(readonly=True) as conn:
-        _, target_sqlite_space, _ = resolve_space(conn, target_space)
-        dup_rows = conn.execute(
-            "SELECT id FROM notes WHERE title = ? AND COALESCE(space, '') = COALESCE(?, '') "
-            "AND trashed = 0 AND deleted = 0 AND id != ?",
-            (target_title, target_sqlite_space, new_note.id),
-        ).fetchall()
-        for dr in dup_rows:
-            if dr["id"] not in ids_to_trash:
-                ids_to_trash.append(dr["id"])
-
-    for tid in ids_to_trash:
-        if tid != new_note.id:
-            dispatch_deeplink(
-                f"upnote://x-callback-url/note/moveToTrash?noteId={urllib.parse.quote(tid)}"
+    # Hold the (re-entrant) deep-link lock across create -> trash so no concurrent
+    # request can interleave between confirming the replacement and trashing the original.
+    with _DEEPLINK_LOCK:
+        new_note = create_note_via_upnote(
+            NoteCreateRequest(
+                title=target_title,
+                text=target_text,
+                markdown=req.markdown,
+                space=target_space,
+                notebook=target_notebook,
+                tags=target_tags,
             )
-            time.sleep(0.05)
+        )
+
+        # By default only the note being updated is trashed. Other notes that merely share
+        # its title are left alone unless the caller explicitly opts in with `dedupe=true`,
+        # which is further limited to the same space AND the same notebook.
+        ids_to_trash: list[str] = [existing.id]
+        if req.dedupe:
+            with get_db_connection(readonly=True) as conn:
+                _, target_sqlite_space, _ = resolve_space(conn, target_space)
+                _, note_to_notebooks = load_notebooks_index(conn)
+                new_nb_ids = {nb.id for nb in note_to_notebooks.get(new_note.id, [])}
+                dup_rows = conn.execute(
+                    "SELECT id FROM notes WHERE title = ? AND COALESCE(space, '') = COALESCE(?, '') "
+                    "AND trashed = 0 AND deleted = 0 AND id != ?",
+                    (target_title, target_sqlite_space, new_note.id),
+                ).fetchall()
+                for dr in dup_rows:
+                    dup_nb_ids = {nb.id for nb in note_to_notebooks.get(dr["id"], [])}
+                    if dup_nb_ids == new_nb_ids and dr["id"] not in ids_to_trash:
+                        ids_to_trash.append(dr["id"])
+
+        for tid in ids_to_trash:
+            if tid != new_note.id:
+                dispatch_deeplink(
+                    f"upnote://x-callback-url/note/moveToTrash?noteId={urllib.parse.quote(tid)}"
+                )
+                time.sleep(0.05)
     return new_note
+
+
+def _require_upnote_stopped(force: bool, operation: str) -> None:
+    """
+    Direct SQLite writes bypass UpNote's in-memory store and Cloud sync queue; while the
+    Electron app is running they can be silently overwritten or never synced. Refuse
+    unless UpNote is stopped or the caller passes `force=true`.
+    """
+    if force:
+        return
+    pid, _, _ = find_upnote_process()
+    if pid is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{operation} writes directly to upnote.sqlite3, which is unsafe while UpNote "
+                f"(pid {pid}) is running: changes may be overwritten or never reach UpNote Cloud. "
+                "Quit UpNote first, or pass force=true to proceed anyway."
+            ),
+        )
 
 
 @app.delete("/api/v1/notes/{note_id}", tags=["Notes"], summary="Move a note to Trash or permanently delete")
@@ -1975,10 +2176,19 @@ def delete_note(
     note_id: str,
     permanent: bool = Query(
         default=False,
-        description="If false (default), moves the note to UpNote Trash via x-callback-url; if true, marks deleted=1 in SQLite",
+        description=(
+            "If false (default), moves the note to UpNote Trash via x-callback-url; if true, "
+            "marks deleted=1 directly in SQLite (offline-only; requires UpNote to be stopped or force=true)"
+        ),
+    ),
+    force: bool = Query(
+        default=False,
+        description="Allow permanent=true while UpNote is running (unsafe: may be overwritten / not synced)",
     ),
 ) -> dict[str, Any]:
     """Move a note to Trash (synced to UpNote Cloud) or permanently mark it deleted."""
+    if permanent:
+        _require_upnote_stopped(force, "permanent=true")
     with get_db_connection(readonly=True) as conn:
         spaces_map = load_spaces_map(conn)
         _, note_to_notebooks = load_notebooks_index(conn)

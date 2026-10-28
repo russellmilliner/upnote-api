@@ -166,7 +166,16 @@ journalctl --user -u upnote-api.service -f
 | `UPNOTE_LAUNCH_SCRIPT` | `~/.local/bin/upnotelaunch.sh` | Background launcher script if UpNote is not running |
 | `UPNOTE_API_URL` | `http://127.0.0.1:8765` | Base URL used by `upnote-cli` and `upnote-mcp` |
 | `UPNOTE_API_TOKEN` | *(empty — disabled)* | Optional bearer/API-key token (`Authorization: Bearer <token>` or `X-API-Key: <token>`) |
-| `UPNOTE_CORS_ORIGINS` | `http://127.0.0.1:8765,http://localhost:8765` | Comma-separated list of allowed CORS origins |
+| `UPNOTE_CORS_ORIGINS` | `http://127.0.0.1:8765,http://localhost:8765` | Comma-separated list of allowed CORS origins (also the allowlist for `Origin` on write requests) |
+| `UPNOTE_ALLOWED_HOSTS` | `127.0.0.1,localhost,::1` | `Host` header allowlist (DNS-rebinding protection) |
+| `UPNOTE_REQUIRE_UPDATE_CHECKSUM` | `1` | Self-update refuses releases without a `.tar.gz.sha256` asset; set `0` to override (not recommended) |
+| `UPNOTE_MCP_PYTHON` | `~/.local/share/agy-mcp/.venv/bin/python` | Interpreter pinned into the installed `upnote-mcp` shebang (needs the `mcp` package) |
+
+> **Write-request protection:** `POST`/`PUT`/`PATCH`/`DELETE` requests carrying a non-allowlisted `Origin` or `Sec-Fetch-Site: cross-site` are rejected with `403`, so websites open in your browser cannot modify notes. curl, `upnote-cli`, and `upnote-mcp` don't send `Origin` and are unaffected.
+>
+> **Offline-only operations:** `strategy="sqlite_direct"` updates and `DELETE …?permanent=true` write straight to `upnote.sqlite3`, bypassing UpNote's sync. They return `409` while UpNote is running unless you pass `force=true`.
+>
+> **`cloud_replace` updates** trash only the note being updated. Pass `"dedupe": true` to also trash same-title notes in the same space **and** notebook.
 
 ---
 

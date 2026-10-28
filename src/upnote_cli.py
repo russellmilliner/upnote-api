@@ -79,6 +79,25 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
     }
 
 
+
+def _mcp_python() -> str:
+    """Interpreter for the MCP server script (needs the `mcp` package; system python may lack it)."""
+    env_py = os.environ.get("UPNOTE_MCP_PYTHON", "").strip()
+    if env_py:
+        return env_py
+    venv_py = Path.home() / ".local" / "share" / "agy-mcp" / ".venv" / "bin" / "python"
+    return str(venv_py) if venv_py.exists() else "/usr/bin/env python3"
+
+
+def _install_mcp_script(src: Path, dst: Path) -> None:
+    """Copy upnote_mcp.py to `dst`, pinning its shebang to an interpreter that has `mcp`."""
+    lines = src.read_text(encoding="utf-8").splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        lines[0] = f"#!{_mcp_python()}\n"
+    dst.write_text("".join(lines), encoding="utf-8")
+    dst.chmod(0o755)
+
+
 def self_update_from_github() -> dict[str, Any]:
     info = check_github_release(timeout=15.0)
     if not info["update_available"]:
@@ -110,14 +129,23 @@ def self_update_from_github() -> dict[str, Any]:
             archive_bytes = resp.read()
             archive_path.write_bytes(archive_bytes)
 
-        if sha256_url and str(sha256_url).startswith(ALLOWED_DOWNLOAD_PREFIX):
+        sha_ok = bool(sha256_url) and str(sha256_url).startswith(ALLOWED_DOWNLOAD_PREFIX)
+        if not sha_ok and os.environ.get("UPNOTE_REQUIRE_UPDATE_CHECKSUM", "1") != "0":
+            raise RuntimeError(
+                "Release is missing a trusted .tar.gz.sha256 asset; refusing to install "
+                "(set UPNOTE_REQUIRE_UPDATE_CHECKSUM=0 to override)."
+            )
+        if sha_ok:
             sha_req = urllib.request.Request(
                 sha256_url,
                 headers={"User-Agent": f"upnote-cli/{APP_VERSION}"},
                 method="GET",
             )
             with urllib.request.urlopen(sha_req, timeout=15.0) as sha_resp:
-                expected_sha = sha_resp.read().decode("utf-8").strip().split()[0].lower()
+                sha_parts = sha_resp.read().decode("utf-8").strip().split()
+            expected_sha = sha_parts[0].lower() if sha_parts else ""
+            if len(expected_sha) != 64 or any(c not in "0123456789abcdef" for c in expected_sha):
+                raise RuntimeError("Release checksum file is malformed.")
             actual_sha = hashlib.sha256(archive_bytes).hexdigest().lower()
             if not secrets.compare_digest(expected_sha, actual_sha):
                 raise RuntimeError(
@@ -153,8 +181,7 @@ def self_update_from_github() -> dict[str, Any]:
                 mcp_dir / "upnote_mcp.py",
                 bin_dir / "upnote-mcp",
             ):
-                shutil.copy2(extracted_mcp[0], mcp_target)
-                mcp_target.chmod(0o755)
+                _install_mcp_script(extracted_mcp[0], mcp_target)
 
         subprocess.run(
             ["systemctl", "--user", "restart", "upnote-api.service"],

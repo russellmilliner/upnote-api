@@ -11,6 +11,9 @@ Environment="UPNOTE_DB_PATH=%h/.config/UpNote/upnote.sqlite3"
 Environment="UPNOTE_APPIMAGE_PATH=%h/AppImages/upnote.appimage"
 Environment="UPNOTE_LAUNCH_SCRIPT=%h/.local/bin/upnotelaunch.sh"
 ExecStart=/usr/bin/python3 %h/.local/share/upnote-api/upnote_api.py
+# NoNewPrivileges= / RestrictSUIDSGID= are intentionally NOT set: when UpNote is not
+# running, this service launches the UpNote AppImage, which mounts itself via the setuid
+# `fusermount` helper. Those directives block setuid and would break auto-launch.
 Restart=always
 RestartSec=3
 
