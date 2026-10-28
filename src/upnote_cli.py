@@ -28,6 +28,39 @@ GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 ALLOWED_DOWNLOAD_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
+# Must match TRUSTED_RELEASE_SIGNERS in upnote_api.py (enforced by the test suite).
+RELEASE_SIGNING_NAMESPACE = "upnote-api-release"
+TRUSTED_RELEASE_SIGNERS: tuple[str, ...] = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqeVYqm5foQl1HIoGKDRedTjh+FCQEmA6IC/Fv3tp9M upnote-api-release-2026",
+)
+
+
+def verify_release_signature(archive_bytes: bytes, sig_text: str) -> None:
+    """Raise RuntimeError unless `sig_text` is a valid release signature over `archive_bytes`."""
+    if "-----BEGIN SSH SIGNATURE-----" not in sig_text:
+        raise RuntimeError("Release signature file is malformed.")
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        raise RuntimeError("ssh-keygen (OpenSSH >= 8.1) is required to verify release signatures.")
+    ns = RELEASE_SIGNING_NAMESPACE
+    with tempfile.TemporaryDirectory(prefix="upnote-cli-sig-") as tmp:
+        allowed = Path(tmp) / "allowed_signers"
+        allowed.write_text(
+            "".join(f'{ns} namespaces="{ns}" {k}\n' for k in TRUSTED_RELEASE_SIGNERS), encoding="utf-8"
+        )
+        sig_path = Path(tmp) / "release.sig"
+        sig_path.write_text(sig_text, encoding="utf-8")
+        proc = subprocess.run(
+            [ssh_keygen, "-Y", "verify", "-f", str(allowed), "-I", ns, "-n", ns, "-s", str(sig_path)],
+            input=archive_bytes,
+            capture_output=True,
+            timeout=30,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Release signature verification FAILED: the archive is not signed by a trusted "
+            "upnote-api release key."
+        )
 
 
 def _parse_semver(version: str) -> tuple[int, int, int]:
@@ -60,6 +93,7 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
     body = str(data.get("body") or "")
     download_url: str | None = None
     sha256_url: str | None = None
+    sig_url: str | None = None
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         burl = str(asset.get("browser_download_url") or "")
@@ -67,6 +101,8 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
             download_url = burl
         elif name.endswith(".tar.gz.sha256") and burl:
             sha256_url = burl
+        elif name.endswith(".tar.gz.sig") and burl:
+            sig_url = burl
 
     return {
         "current_version": APP_VERSION,
@@ -75,6 +111,7 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
         "release_url": html_url,
         "download_url": download_url,
         "sha256_url": sha256_url,
+        "sig_url": sig_url,
         "release_notes": body,
     }
 
@@ -151,6 +188,22 @@ def self_update_from_github() -> dict[str, Any]:
                 raise RuntimeError(
                     f"SHA-256 checksum mismatch for release archive (expected {expected_sha}, got {actual_sha})"
                 )
+
+        sig_url = info.get("sig_url")
+        sig_ok = bool(sig_url) and str(sig_url).startswith(ALLOWED_DOWNLOAD_PREFIX)
+        if not sig_ok:
+            if os.environ.get("UPNOTE_REQUIRE_UPDATE_SIGNATURE", "1") != "0":
+                raise RuntimeError(
+                    "Release is missing a trusted .tar.gz.sig signature; refusing to install "
+                    "(set UPNOTE_REQUIRE_UPDATE_SIGNATURE=0 to override)."
+                )
+        else:
+            sig_req = urllib.request.Request(
+                str(sig_url), headers={"User-Agent": f"upnote-cli/{APP_VERSION}"}, method="GET"
+            )
+            with urllib.request.urlopen(sig_req, timeout=15.0) as sig_resp:
+                sig_text = sig_resp.read(64 * 1024).decode("utf-8", errors="replace")
+            verify_release_signature(archive_bytes, sig_text)
 
         with tarfile.open(archive_path, "r:gz") as tar:
             tar.extractall(path=tmp_path, filter="data")

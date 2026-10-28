@@ -45,6 +45,15 @@ GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 ALLOWED_DOWNLOAD_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
+# Release archives are signed with an offline-held Ed25519 key via OpenSSH signatures
+# (`ssh-keygen -Y sign -n upnote-api-release`). The checksum alone only detects corruption;
+# the signature proves the archive came from the maintainer even if the GitHub release
+# itself (account, token, or assets) were tampered with. Add a new key here BEFORE
+# rotating; keep the old one until all installs have updated past the rotation.
+RELEASE_SIGNING_NAMESPACE = "upnote-api-release"
+TRUSTED_RELEASE_SIGNERS: tuple[str, ...] = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqeVYqm5foQl1HIoGKDRedTjh+FCQEmA6IC/Fv3tp9M upnote-api-release-2026",
+)
 UPDATE_CHECK_INTERVAL_SECONDS = 6 * 3600
 MAX_DEEPLINK_BYTES = 120_000
 
@@ -91,6 +100,7 @@ ALLOWED_HOSTS = frozenset(
 )
 # Allow skipping the release checksum only by explicit opt-out (not recommended).
 REQUIRE_UPDATE_CHECKSUM = os.environ.get("UPNOTE_REQUIRE_UPDATE_CHECKSUM", "1") != "0"
+REQUIRE_UPDATE_SIGNATURE = os.environ.get("UPNOTE_REQUIRE_UPDATE_SIGNATURE", "1") != "0"
 
 logger = logging.getLogger("upnote_api")
 
@@ -293,6 +303,7 @@ class UpdateCheckOut(BaseModel):
     release_url: str = GITHUB_RELEASES_PAGE_URL
     download_url: str | None = None
     sha256_url: str | None = None
+    sig_url: str | None = None
     release_notes: str = ""
     checked_at: float | None = None
 
@@ -359,6 +370,7 @@ def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
     body = str(data.get("body") or "")
     download_url: str | None = None
     sha256_url: str | None = None
+    sig_url: str | None = None
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         burl = str(asset.get("browser_download_url") or "")
@@ -366,6 +378,8 @@ def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
             download_url = burl
         elif name.endswith(".tar.gz.sha256") and burl:
             sha256_url = burl
+        elif name.endswith(".tar.gz.sig") and burl:
+            sig_url = burl
 
     info = UpdateCheckOut(
         current_version=APP_VERSION,
@@ -374,6 +388,7 @@ def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
         release_url=html_url,
         download_url=download_url,
         sha256_url=sha256_url,
+        sig_url=sig_url,
         release_notes=body,
         checked_at=time.time(),
     )
@@ -429,6 +444,41 @@ def _install_mcp_script(src: Path, dst: Path) -> None:
     dst.chmod(0o755)
 
 
+def verify_release_signature(
+    archive_bytes: bytes, sig_text: str, signers: tuple[str, ...] | None = None
+) -> None:
+    """
+    Raise RuntimeError unless `sig_text` is a valid OpenSSH signature over `archive_bytes`
+    by one of `signers` (default: TRUSTED_RELEASE_SIGNERS) in the release namespace.
+    Fails closed if `ssh-keygen` (OpenSSH >= 8.1) is unavailable.
+    """
+    keys = TRUSTED_RELEASE_SIGNERS if signers is None else signers
+    if not keys:
+        raise RuntimeError("No trusted release signing keys are configured.")
+    if "-----BEGIN SSH SIGNATURE-----" not in sig_text:
+        raise RuntimeError("Release signature file is malformed.")
+    ssh_keygen = shutil.which("ssh-keygen")
+    if not ssh_keygen:
+        raise RuntimeError("ssh-keygen (OpenSSH >= 8.1) is required to verify release signatures.")
+    ns = RELEASE_SIGNING_NAMESPACE
+    with tempfile.TemporaryDirectory(prefix="upnote-api-sig-") as tmp:
+        allowed = Path(tmp) / "allowed_signers"
+        allowed.write_text("".join(f'{ns} namespaces="{ns}" {k}\n' for k in keys), encoding="utf-8")
+        sig_path = Path(tmp) / "release.sig"
+        sig_path.write_text(sig_text, encoding="utf-8")
+        proc = subprocess.run(
+            [ssh_keygen, "-Y", "verify", "-f", str(allowed), "-I", ns, "-n", ns, "-s", str(sig_path)],
+            input=archive_bytes,
+            capture_output=True,
+            timeout=30,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Release signature verification FAILED: the archive is not signed by a trusted "
+            "upnote-api release key."
+        )
+
+
 def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut:
     """Download, verify, and install the latest GitHub release archive."""
     info = check_for_updates(timeout=15.0)
@@ -476,6 +526,24 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
             with urllib.request.urlopen(sha_req, timeout=15.0) as sha_resp:
                 sha_text = sha_resp.read().decode("utf-8")
             verify_archive_sha256(archive_bytes, sha_text)
+
+        sig_url_ok = bool(info.sig_url) and str(info.sig_url).startswith(ALLOWED_DOWNLOAD_PREFIX)
+        if not sig_url_ok:
+            if REQUIRE_UPDATE_SIGNATURE:
+                raise RuntimeError(
+                    "Release is missing a trusted .tar.gz.sig signature; refusing to install "
+                    "(set UPNOTE_REQUIRE_UPDATE_SIGNATURE=0 to override)."
+                )
+            logger.warning("Installing release without signature verification (override enabled).")
+        else:
+            sig_req = urllib.request.Request(
+                str(info.sig_url),
+                headers={"User-Agent": f"upnote-api/{APP_VERSION}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(sig_req, timeout=15.0) as sig_resp:
+                sig_text = sig_resp.read(64 * 1024).decode("utf-8", errors="replace")
+            verify_release_signature(archive_bytes, sig_text)
 
         with tarfile.open(archive_path, "r:gz") as tar:
             tar.extractall(path=tmp_path, filter="data")
@@ -1017,156 +1085,402 @@ def strip_duplicate_leading_title(body: str, title: str) -> str:
     return s
 
 
+_TAG_RE = re.compile(r"<[^<>]+>")
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+_CLOSE_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _close_re(tag: str) -> re.Pattern[str]:
+    pat = _CLOSE_RE_CACHE.get(tag)
+    if pat is None:
+        pat = re.compile(rf"</{re.escape(tag)}>", re.I)
+        _CLOSE_RE_CACHE[tag] = pat
+    return pat
+
+
+def _iter_paired(s: str, open_re: re.Pattern[str]) -> Any:
+    """
+    Yield `(open_match, close_match)` pairs equivalent to the non-overlapping matches of
+    `open_re + "(.*?)</tag>"` (re.S | re.I), where `tag` is the opener's named group `tag`.
+
+    Runs in linear time. A plain lazy regex is quadratic on unclosed tags: for every opener
+    it scans to the end of the string looking for a closer, then retries at the next opener.
+    Here, once a closer for a tag name is absent after position p, it is absent after every
+    later opener too, so that tag name is marked dead and never searched for again.
+    Opening-tag patterns use `[^<>]*` (not `[^>]*`) so a tag can never span another `<`,
+    which keeps the opener search itself linear.
+    """
+    dead: set[str] = set()
+    pos = 0
+    while True:
+        m = open_re.search(s, pos)
+        if m is None:
+            return
+        tag = m.group("tag").lower()
+        if tag in dead:
+            pos = m.end()
+            continue
+        c = _close_re(tag).search(s, m.end())
+        if c is None:
+            dead.add(tag)
+            pos = m.end()
+            continue
+        yield m, c
+        pos = c.end()
+
+
+def _sub_paired(s: str, open_re: re.Pattern[str], repl: Any) -> str:
+    """Linear-time `re.sub` for paired tags; `repl(open_match, inner, whole) -> str`."""
+    out: list[str] = []
+    last = 0
+    for m, c in _iter_paired(s, open_re):
+        out.append(s[last : m.start()])
+        out.append(repl(m, s[m.end() : c.start()], s[m.start() : c.end()]))
+        last = c.end()
+    if not out:
+        return s
+    out.append(s[last:])
+    return "".join(out)
+
+
+def _findall_paired(s: str, open_re: re.Pattern[str]) -> list[tuple[re.Match[str], str]]:
+    """Linear-time `re.findall` for paired tags; returns `(open_match, inner)` tuples."""
+    return [(m, s[m.end() : c.start()]) for m, c in _iter_paired(s, open_re)]
+
+
+_UPNOTE_TAG_LINK_RE = re.compile(r"<(?P<tag>a)\b[^<>]*?\bdata-upnote-tag=[^<>]*>", re.I)
+_PRE_RE = re.compile(r"<(?P<tag>pre)(?P<attrs>\s[^<>]*)?>", re.I)
+_CODE_RE = re.compile(r"<(?P<tag>code)\b[^<>]*>", re.I)
+_BOLD_RE = re.compile(r"<(?P<tag>b|strong)\b[^<>]*>", re.I)
+_ITALIC_RE = re.compile(r"<(?P<tag>i|em)\b[^<>]*>", re.I)
+_STRIKE_RE = re.compile(r"<(?P<tag>strike|s)\b[^<>]*>", re.I)
+_LINK_RE = re.compile(r"<(?P<tag>a)\b(?P<attrs>[^<>]*)>", re.I)
+_TABLE_RE = re.compile(r"<(?P<tag>table)\b[^<>]*>", re.I)
+_TR_RE = re.compile(r"<(?P<tag>tr)\b[^<>]*>", re.I)
+_CELL_RE = re.compile(r"<(?P<tag>th|td)\b[^<>]*>", re.I)
+_HEADING_RES = {lvl: re.compile(rf"<(?P<tag>h{lvl})\b[^<>]*>", re.I) for lvl in range(1, 7)}
+_BLOCKQUOTE_RE = re.compile(r"<(?P<tag>blockquote)\b[^<>]*>", re.I)
+_UL_RE = re.compile(r"<(?P<tag>ul)\b[^<>]*>", re.I)
+_OL_RE = re.compile(r"<(?P<tag>ol)\b[^<>]*>", re.I)
+_LI_ATTRS_RE = re.compile(r"<(?P<tag>li)(?P<attrs>\s[^<>]*)?>", re.I)
+_LI_RE = re.compile(r"<(?P<tag>li)\b[^<>]*>", re.I)
+_HREF_RE = re.compile(r"href=[\"\x27]([^\"\x27]+)[\"\x27]", re.I)
+# A run of consecutive block tags (and surrounding whitespace) inside a single-line context.
+_BLOCK_RUN_IN_INLINE_RE = re.compile(
+    r"(?:\s*</?(?:div|p|li|ul|ol|tr|blockquote|h[1-6])\b[^<>]*>\s*)+", re.I
+)
+_LI_OPEN_RE = re.compile(r"<li\b", re.I)
+
+
+def _block_run_separator(m: re.Match[str]) -> str:
+    return " • " if _LI_OPEN_RE.search(m.group(0)) else " "
+
+
+def _link_to_markdown(m: re.Match[str], inner: str, _whole: str) -> str:
+    hm = _HREF_RE.search(m.group("attrs") or "")
+    inner_clean = _TAG_RE.sub("", inner).strip()
+    if hm:
+        href = hm.group(1)
+        if inner_clean == href:
+            return href
+        return f"[{inner_clean}]({href})"
+    return inner_clean
+
+
+def _apply_inline_emphasis(f: str) -> str:
+    f = _sub_paired(f, _BOLD_RE, lambda m, inner, w: f"**{inner}**")
+    f = _sub_paired(f, _ITALIC_RE, lambda m, inner, w: f"*{inner}*")
+    f = _sub_paired(f, _STRIKE_RE, lambda m, inner, w: f"~~{inner}~~")
+    return f
+
+
+def _escape_angle_brackets_in_attributes(s: str) -> str:
+    """
+    Escape raw `<` / `>` inside quoted attribute values (e.g. older Chromium serialized
+    `href="mailto:<id@teams.ms>"` verbatim; current Chromium writes `&lt;`/`&gt;`).
+
+    After this pass a tag can never contain a raw `<`, so every later pattern can use
+    `[^<>]` and stay linear without mis-splitting such tags.
+
+    Single forward scan: `j` only moves forward. When a quote character has no closing
+    partner, there is none later either, so that quote character is treated as plain text
+    from then on ("dead"). That failing search happens at most once per quote type, which
+    keeps the pass linear even on adversarial input.
+    """
+    if "<" not in s or ('"' not in s and "'" not in s):
+        return s
+    n = len(s)
+    dead: set[str] = set()
+    edits: list[tuple[int, int, str]] = []
+    i = 0
+    while i < n:
+        lt = s.find("<", i)
+        if lt == -1 or lt + 1 >= n:
+            break
+        nxt = s[lt + 1]
+        if not (nxt.isalpha() or nxt == "/"):
+            i = lt + 1
+            continue
+        j = lt + 1
+        while j < n:
+            ch = s[j]
+            if ch == ">":
+                j += 1
+                break
+            if ch == "<":  # malformed: a new tag starts before this one closed
+                break
+            if (ch == '"' or ch == "'") and ch not in dead:
+                close = s.find(ch, j + 1)
+                if close == -1:
+                    dead.add(ch)
+                    j += 1
+                    continue
+                val = s[j + 1 : close]
+                if "<" in val or ">" in val:
+                    edits.append((j + 1, close, val.replace("<", "&lt;").replace(">", "&gt;")))
+                j = close + 1
+                continue
+            j += 1
+        i = j
+    if not edits:
+        return s
+    out: list[str] = []
+    last = 0
+    for start, end, repl in edits:
+        out.append(s[last:start])
+        out.append(repl)
+        last = end
+    out.append(s[last:])
+    return "".join(out)
+
+
+_LIST_TOKEN_RE = re.compile(r"<(?P<close>/)?(?P<tag>ul|ol)\b(?P<attrs>[^<>]*)>", re.I)
+_CHECKED_RE = re.compile(r"data-checked=[\"\x27](true|false)[\"\x27]", re.I)
+_MAX_LIST_DEPTH = 16
+
+
+def _convert_lists(s: str, clean_inline: Any, protect: Any, nonce: str) -> str:
+    """
+    Convert (possibly nested) <ul>/<ol> lists to Markdown, innermost first.
+
+    UpNote serializes nested lists as *siblings* of the parent item
+    (`<ul><li>A</li><ul><li>B</li></ul><li>C</li></ul>`). The previous lazy
+    `<ul>(.*?)</ul>` approach matched up to the inner `</ul>` and kept only text inside
+    `<li>` pairs, so nested content was flattened, glued together, or dropped outright
+    (e.g. a `<ul>` nested in an `<ol>`). Here a stack matches each closer with its own
+    opener. A nested list becomes a placeholder, which the parent expands *indented*
+    under the preceding item, whether the nested list sat inside the `<li>` or after it.
+
+    Cost is O(n * depth); depth is capped at `_MAX_LIST_DEPTH` (deeper list tags are left
+    as plain markup and stripped later), so the pass stays linear on adversarial input.
+    """
+    nested_re = re.compile(rf"@@LIST_{nonce}_\d+@@")
+    nested_md: dict[str, str] = {}
+
+    def _render(tag: str, inner: str) -> str:
+        lines: list[str] = []
+        indent = ""
+
+        def _attach(md: str) -> None:
+            pad = indent if lines else ""
+            lines.extend((pad + ln) if ln.strip() else ln for ln in md.split("\n"))
+
+        def _attach_nested(fragment: str) -> str:
+            for key in nested_re.findall(fragment):
+                _attach(nested_md.pop(key, ""))
+            return nested_re.sub("", fragment)
+
+        number = 0
+        last = 0
+        li_re = _LI_ATTRS_RE if tag == "ul" else _LI_RE
+        for lm, c in _iter_paired(inner, li_re):
+            gap = _attach_nested(inner[last : lm.start()])
+            stray = clean_inline(gap)
+            if stray:
+                lines.append((indent + stray) if lines else stray)
+            item_html = inner[lm.end() : c.start()]
+            nested_keys = nested_re.findall(item_html)
+            text = clean_inline(nested_re.sub("", item_html))
+            if tag == "ol":
+                number += 1
+                prefix = f"{number}. "
+            else:
+                prefix = "- "
+                checked_m = _CHECKED_RE.search(lm.groupdict().get("attrs") or "")
+                if checked_m:
+                    prefix = "- [x] " if checked_m.group(1).lower() == "true" else "- [ ] "
+            lines.append(f"{prefix}{text}")
+            indent = " " * (len(prefix) if tag == "ol" else 2)
+            for key in nested_keys:
+                _attach(nested_md.pop(key, ""))
+            last = c.end()
+        tail = _attach_nested(inner[last:])
+        stray = clean_inline(tail)
+        if stray:
+            lines.append((indent + stray) if lines else stray)
+        return "\n".join(lines)
+
+    out: list[str] = []
+    stack: list[tuple[str, int]] = []  # (tag, index of the opener chunk in `out`)
+    last = 0
+    for m in _LIST_TOKEN_RE.finditer(s):
+        out.append(s[last : m.start()])
+        last = m.end()
+        tag = m.group("tag").lower()
+        if not m.group("close"):
+            out.append(m.group(0))
+            if len(stack) < _MAX_LIST_DEPTH:
+                stack.append((tag, len(out) - 1))
+            continue
+        idx = next((k for k in range(len(stack) - 1, -1, -1) if stack[k][0] == tag), None)
+        if idx is None:
+            out.append(m.group(0))  # stray closer: left for the final tag strip
+            continue
+        _, start = stack[idx]
+        del stack[idx:]  # malformed unclosed inner openers stay as raw text in `inner`
+        inner = "".join(out[start + 1 :])
+        del out[start:]
+        md = _render(tag, inner)
+        if stack:
+            key = f"@@LIST_{nonce}_{len(nested_md)}@@"
+            nested_md[key] = md
+            out.append(key)
+        else:
+            out.append("\n\n" + md + "\n\n")
+    out.append(s[last:])
+    result = "".join(out)
+    if nested_md:  # nested lists whose parent was malformed/unclosed: emit them in place
+        result = nested_re.sub(lambda mm: "\n" + nested_md.get(mm.group(0), "") + "\n", result)
+    return result
+
+
 def html_to_markdown(raw_html: str | None, title: str = "") -> str:
-    """Reconstruct clean, human-readable Markdown from UpNote's stored HTML column."""
+    """
+    Reconstruct clean, human-readable Markdown from UpNote's stored HTML column.
+
+    Linear time on any input (see `_iter_paired`): paired tags are matched with a scanner
+    instead of lazy `.*?</tag>` regexes, and placeholders are restored in a single pass.
+    """
     if not raw_html:
         return ""
-    s = raw_html
+    s = _escape_angle_brackets_in_attributes(raw_html)
     # Strip UpNote native tag links (<a ... data-upnote-tag="#..." ...>#...</a>)
-    s = re.sub(r"<a\b[^>]*\bdata-upnote-tag=[^>]*>.*?</a>", "", s, flags=re.I | re.S)
+    s = _sub_paired(s, _UPNOTE_TAG_LINK_RE, lambda m, inner, w: "")
+
+    # Placeholders carry a per-call nonce so literal "@@...@@" text inside a note can
+    # never be mistaken for (or replaced by) a protected block.
+    nonce = secrets.token_hex(4)
+    protected: dict[str, str] = {}
+
+    def _protect(kind: str, value: str) -> str:
+        key = f"@@{kind}_{nonce}_{len(protected)}@@"
+        protected[key] = value
+        return key
 
     # Convert <pre ...>...</pre> blocks first with placeholders so inner HTML/newlines are preserved
-    pre_blocks: list[str] = []
-
-    def _replace_pre(m: re.Match[str]) -> str:
-        attrs = m.group(1) or ""
-        body = m.group(2) or ""
+    def _replace_pre(m: re.Match[str], body: str, _whole: str) -> str:
+        attrs = m.group("attrs") or ""
         lang_m = re.search(r"data-code-language=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
         lang = lang_m.group(1).strip() if lang_m else ""
-        body = re.sub(r"<br\s*/?>", "\n", body, flags=re.I)
-        body = re.sub(r"<[^>]+>", "", body)
+        body = _BR_RE.sub("\n", body)
+        body = _TAG_RE.sub("", body)
         body = html_mod.unescape(body).rstrip("\n")
-        idx = len(pre_blocks)
-        pre_blocks.append(f"\n```{lang}\n{body}\n```\n")
-        return f"\n@@PRE_BLOCK_{idx}@@\n"
+        return "\n" + _protect("PRE_BLOCK", f"\n```{lang}\n{body}\n```\n") + "\n"
 
-    s = re.sub(r"<pre(\s[^>]*)?>(.*?)</pre>", _replace_pre, s, flags=re.I | re.S)
+    s = _sub_paired(s, _PRE_RE, _replace_pre)
 
     # Tokenize inline <code>...</code> spans before tag stripping or HTML unescaping so
     # escaped HTML tags (e.g. `<code>&lt;div&gt;</code>`) or `*` / `_` inside inline code
     # are never stripped or turned into bold/italic Markdown.
-    code_spans: list[str] = []
-
-    def _replace_code_span(m: re.Match[str]) -> str:
-        inner = re.sub(r"<[^>]+>", "", m.group(1) or "")
-        inner_unescaped = html_mod.unescape(inner).replace("\xa0", " ")
-        idx = len(code_spans)
+    def _replace_code_span(m: re.Match[str], inner: str, _whole: str) -> str:
+        # Inline code is single-line: a <br> inside it becomes a space ("then<br>4" used to
+        # be glued into "then4").
+        inner = _BR_RE.sub(" ", inner)
+        inner_unescaped = html_mod.unescape(_TAG_RE.sub("", inner)).replace("\xa0", " ")
         if "`" in inner_unescaped:
-            code_spans.append(f"`` {inner_unescaped} ``")
-        else:
-            code_spans.append(f"`{inner_unescaped}`")
-        return f"@@CODE_SPAN_{idx}@@"
+            return _protect("CODE_SPAN", f"`` {inner_unescaped} ``")
+        return _protect("CODE_SPAN", f"`{inner_unescaped}`")
 
-    s = re.sub(r"<code\b[^>]*>(.*?)</code>", _replace_code_span, s, flags=re.I | re.S)
+    s = _sub_paired(s, _CODE_RE, _replace_code_span)
 
     def _clean_inline(fragment: str) -> str:
-        f = fragment
-        f = re.sub(r"<br\s*/?>", " ", f, flags=re.I)
-        f = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f, flags=re.I | re.S)
-        f = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", f, flags=re.I | re.S)
-        f = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", f, flags=re.I | re.S)
-
-        def _link_sub(m: re.Match[str]) -> str:
-            attrs, inner = m.group(1), m.group(2)
-            hm = re.search(r"href=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
-            inner_clean = re.sub(r"<[^>]+>", "", inner).strip()
-            if hm:
-                href = hm.group(1)
-                if inner_clean == href:
-                    return href
-                return f"[{inner_clean}]({href})"
-            return inner_clean
-
-        f = re.sub(r"<a\b([^>]*)>(.*?)</a>", _link_sub, f, flags=re.I | re.S)
-        f = re.sub(r"<[^>]+>", "", f)
+        f = _BR_RE.sub(" ", fragment)
+        # Block tags inside single-line contexts (table cells, list items, headings) must
+        # still separate words: "<li>Attachments</li><li>Inline</li>" -> "• Attachments
+        # • Inline", "<div>A</div><div>B</div>" -> "A B" (they used to be glued: "AB").
+        f = _BLOCK_RUN_IN_INLINE_RE.sub(_block_run_separator, f)
+        f = _apply_inline_emphasis(f)
+        f = _sub_paired(f, _LINK_RE, _link_to_markdown)
+        f = _TAG_RE.sub("", f)
         f = html_mod.unescape(f).replace("\xa0", " ").strip()
-        return f
+        # Re-escape &, <, > before splicing the fragment back into the document. Otherwise a
+        # decoded "&lt;" becomes a literal "<" that the later document-wide tag strip treats
+        # as the start of a tag, deleting text up to the next ">" (this silently destroyed
+        # table rows such as "Humidity Normal (<61)"). It also prevents double-decoding
+        # ("&amp;lt;" must end as the literal text "&lt;", not "<"). The single final
+        # html.unescape() below restores these characters.
+        return html_mod.escape(f, quote=False)
 
-    def _replace_table(m: re.Match[str]) -> str:
-        tbody = m.group(0)
-        rows = re.findall(r"<tr\b[^>]*>(.*?)</tr>", tbody, flags=re.I | re.S)
+    def _replace_table(m: re.Match[str], _inner: str, tbody: str) -> str:
+        rows = _findall_paired(tbody, _TR_RE)
         if not rows:
             return ""
         md_rows: list[str] = []
-        for r_idx, r_html in enumerate(rows):
-            cells = re.findall(r"<(th|td)\b[^>]*>(.*?)</\1>", r_html, flags=re.I | re.S)
+        for r_idx, (_rm, r_html) in enumerate(rows):
+            cells = _findall_paired(r_html, _CELL_RE)
             if not cells:
                 continue
-            cleaned_cells = [_clean_inline(c[1]).replace("|", "\\|") for c in cells]
+            cleaned_cells = [_clean_inline(c_html).replace("|", "\\|") for _cm, c_html in cells]
             md_rows.append("| " + " | ".join(cleaned_cells) + " |")
             if r_idx == 0:
                 md_rows.append("| " + " | ".join(["---"] * len(cleaned_cells)) + " |")
         return "\n\n" + "\n".join(md_rows) + "\n\n"
 
-    s = re.sub(r"<table\b[^>]*>.*?</table>", _replace_table, s, flags=re.I | re.S)
+    s = _sub_paired(s, _TABLE_RE, _replace_table)
 
     for level in range(1, 7):
         hashes = "#" * level
-        s = re.sub(
-            rf"<h{level}\b[^>]*>(.*?)</h{level}>",
-            lambda m, h=hashes: f"\n\n{h} {_clean_inline(m.group(1))}\n\n",
+        s = _sub_paired(
             s,
-            flags=re.I | re.S,
+            _HEADING_RES[level],
+            lambda m, inner, w, h=hashes: f"\n\n{h} {_clean_inline(inner)}\n\n",
         )
 
     s = re.sub(r"<hr\s*/?>", "\n\n---\n\n", s, flags=re.I)
 
-    def _replace_blockquote(m: re.Match[str]) -> str:
-        inner = m.group(1)
-        inner = re.sub(r"</?(div|p)\b[^>]*>", "\n", inner, flags=re.I)
-        inner = re.sub(r"<br\s*/?>", "\n", inner, flags=re.I)
-        lines = [f"> {_clean_inline(ln)}" for ln in inner.splitlines() if _clean_inline(ln)]
+    def _replace_blockquote(m: re.Match[str], inner: str, _whole: str) -> str:
+        inner = re.sub(r"</?(div|p)\b[^<>]*>", "\n", inner, flags=re.I)
+        inner = _BR_RE.sub("\n", inner)
+        lines = [f"> {c}" for c in (_clean_inline(ln) for ln in inner.splitlines()) if c]
         return "\n\n" + "\n".join(lines) + "\n\n"
 
-    s = re.sub(r"<blockquote\b[^>]*>(.*?)</blockquote>", _replace_blockquote, s, flags=re.I | re.S)
+    s = _sub_paired(s, _BLOCKQUOTE_RE, _replace_blockquote)
 
-    def _replace_ul(m: re.Match[str]) -> str:
-        items = re.findall(r"<li(\s[^>]*)?>(.*?)</li>", m.group(1), flags=re.I | re.S)
-        out: list[str] = []
-        for attrs, item_html in items:
-            checked_m = re.search(r"data-checked=[\"\x27](true|false)[\"\x27]", attrs or "", re.I)
-            prefix = "- "
-            if checked_m:
-                prefix = "- [x] " if checked_m.group(1).lower() == "true" else "- [ ] "
-            out.append(f"{prefix}{_clean_inline(item_html)}")
-        return "\n\n" + "\n".join(out) + "\n\n"
+    s = _convert_lists(s, _clean_inline, _protect, nonce)
 
-    def _replace_ol(m: re.Match[str]) -> str:
-        items = re.findall(r"<li\b[^>]*>(.*?)</li>", m.group(1), flags=re.I | re.S)
-        out = [f"{i + 1}. {_clean_inline(item_html)}" for i, item_html in enumerate(items)]
-        return "\n\n" + "\n".join(out) + "\n\n"
-
-    for _ in range(2):
-        s = re.sub(r"<ul\b[^>]*>(.*?)</ul>", _replace_ul, s, flags=re.I | re.S)
-        s = re.sub(r"<ol\b[^>]*>(.*?)</ol>", _replace_ol, s, flags=re.I | re.S)
-
-    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = _BR_RE.sub("\n", s)
     s = re.sub(r"</(div|p)>", "\n\n", s, flags=re.I)
-    s = re.sub(r"<(div|p)\b[^>]*>", "", s, flags=re.I)
+    s = re.sub(r"<(div|p)\b[^<>]*>", "", s, flags=re.I)
 
-    s = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f"{s}", flags=re.I | re.S)
-    s = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
-    s = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", s, flags=re.I | re.S)
-
-    def _link_sub2(m: re.Match[str]) -> str:
-        attrs, inner = m.group(1), m.group(2)
-        hm = re.search(r"href=[\"\x27]([^\"\x27]+)[\"\x27]", attrs, re.I)
-        inner_clean = re.sub(r"<[^>]+>", "", inner).strip()
-        if hm:
-            href = hm.group(1)
-            if inner_clean == href:
-                return href
-            return f"[{inner_clean}]({href})"
-        return inner_clean
-
-    s = re.sub(r"<a\b([^>]*)>(.*?)</a>", _link_sub2, s, flags=re.I | re.S)
-    s = re.sub(r"<[^>]+>", "", s)
+    s = _apply_inline_emphasis(s)
+    s = _sub_paired(s, _LINK_RE, _link_to_markdown)
+    s = _TAG_RE.sub("", s)
     s = html_mod.unescape(s).replace("\xa0", " ")
 
-    for idx, span in enumerate(code_spans):
-        s = s.replace(f"@@CODE_SPAN_{idx}@@", span)
-    for idx, block in enumerate(pre_blocks):
-        s = s.replace(f"@@PRE_BLOCK_{idx}@@", block)
+    # Restore every protected block in ONE pass (previously one full-string str.replace per
+    # placeholder, which made notes with many code spans quadratic). A <pre> nested inside
+    # <code> leaves a PRE placeholder inside a CODE value, so values are restored recursively
+    # (depth is bounded: PRE values never contain placeholders).
+    if protected:
+        placeholder_re = re.compile(rf"@@(?:CODE_SPAN|PRE_BLOCK)_{nonce}_\d+@@")
+
+        def _restore(m: re.Match[str]) -> str:
+            value = protected.get(m.group(0))
+            if value is None:
+                return m.group(0)
+            return placeholder_re.sub(_restore, value) if "@@" in value else value
+
+        s = placeholder_re.sub(_restore, s)
 
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
     return strip_duplicate_leading_title(s, title)

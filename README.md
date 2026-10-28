@@ -169,6 +169,7 @@ journalctl --user -u upnote-api.service -f
 | `UPNOTE_CORS_ORIGINS` | `http://127.0.0.1:8765,http://localhost:8765` | Comma-separated list of allowed CORS origins (also the allowlist for `Origin` on write requests) |
 | `UPNOTE_ALLOWED_HOSTS` | `127.0.0.1,localhost,::1` | `Host` header allowlist (DNS-rebinding protection) |
 | `UPNOTE_REQUIRE_UPDATE_CHECKSUM` | `1` | Self-update refuses releases without a `.tar.gz.sha256` asset; set `0` to override (not recommended) |
+| `UPNOTE_REQUIRE_UPDATE_SIGNATURE` | `1` | Self-update refuses releases without a valid `.tar.gz.sig` from a trusted release key; set `0` to override (not recommended) |
 | `UPNOTE_MCP_PYTHON` | `~/.local/share/agy-mcp/.venv/bin/python` | Interpreter pinned into the installed `upnote-mcp` shebang (needs the `mcp` package) |
 
 > **Write-request protection:** `POST`/`PUT`/`PATCH`/`DELETE` requests carrying a non-allowlisted `Origin` or `Sec-Fetch-Site: cross-site` are rejected with `403`, so websites open in your browser cannot modify notes. curl, `upnote-cli`, and `upnote-mcp` don't send `Origin` and are unaffected.
@@ -176,6 +177,31 @@ journalctl --user -u upnote-api.service -f
 > **Offline-only operations:** `strategy="sqlite_direct"` updates and `DELETE …?permanent=true` write straight to `upnote.sqlite3`, bypassing UpNote's sync. They return `409` while UpNote is running unless you pass `force=true`.
 >
 > **`cloud_replace` updates** trash only the note being updated. Pass `"dedupe": true` to also trash same-title notes in the same space **and** notebook.
+
+---
+
+## 🔏 Release Signing & Verification
+
+Since the release published on 2026-10-28 that introduced signing, every release archive is signed with an Ed25519 key using OpenSSH signatures (namespace `upnote-api-release`). The built-in self-updaters (`POST /api/v1/update/install`, `upnote-api --self-update`, `upnote-cli self-update`) refuse to install an archive unless its `.tar.gz.sig` verifies against a key embedded in the code. A SHA-256 checksum alone only detects corruption. The signature also protects against a tampered GitHub release (compromised account, token, or replaced assets).
+
+| Item | Value |
+| :--- | :--- |
+| Algorithm | Ed25519 via `ssh-keygen -Y sign` / `-Y verify` (OpenSSH ≥ 8.1, no extra Python packages) |
+| Namespace | `upnote-api-release` |
+| Trusted key | `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqeVYqm5foQl1HIoGKDRedTjh+FCQEmA6IC/Fv3tp9M upnote-api-release-2026` |
+| Fingerprint | `SHA256:CNPmKirAgWRNUd6pwtTqRZmU3c1zX2vgSoRsYw1efBo` |
+
+Verify a download manually:
+
+```bash
+V=v0.2.5
+echo 'upnote-api-release namespaces="upnote-api-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqeVYqm5foQl1HIoGKDRedTjh+FCQEmA6IC/Fv3tp9M' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I upnote-api-release -n upnote-api-release \
+  -s upnote-api-$V-linux-x86_64.tar.gz.sig < upnote-api-$V-linux-x86_64.tar.gz
+# -> Good "upnote-api-release" signature for upnote-api-release with ED25519 key SHA256:CNPmKirAgWRNUd6pwtTqRZmU3c1zX2vgSoRsYw1efBo
+```
+
+> **Key rotation:** add the new public key to `TRUSTED_RELEASE_SIGNERS` (in both `src/upnote_api.py` and `src/upnote_cli.py`, which the tests keep in sync), and ship that release signed with the **old** key. Remove the old key only after installs have updated past that release.
 
 ---
 

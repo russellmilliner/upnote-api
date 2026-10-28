@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import sqlite3
@@ -454,3 +455,204 @@ def test_mcp_script_shebang_is_pinned(tmp_path: Path, monkeypatch: pytest.Monkey
     upnote_api._install_mcp_script(REPO_ROOT / "src" / "upnote_mcp.py", dst)
     assert dst.read_text().splitlines()[0] == "#!/opt/venv/bin/python"
     assert dst.stat().st_mode & 0o111
+
+
+# --- html_to_markdown: linear time & content preservation (v0.2.5) ---------------------
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        '<a data-upnote-tag="#x">',
+        "<pre>x",
+        "<code>x",
+        "<b>x",
+        "<h2>x",
+        "<table>x",
+        "<ul><li>x",
+        '<a href="u">x',
+        "<a ",
+        '<a "<a \'',
+        "<div><b>bold</b> <code>c</code> text</div>",
+    ],
+)
+def test_html_to_markdown_is_linear_on_adversarial_input(unit: str) -> None:
+    import time
+
+    def run(n: int) -> float:
+        s = unit * n
+        t0 = time.perf_counter()
+        upnote_api.html_to_markdown(s)
+        return time.perf_counter() - t0
+
+    run(500)  # warm caches
+    small = min(run(2000) for _ in range(3))
+    big = min(run(16000) for _ in range(3))
+    # 8x input: linear => ~8x time; quadratic => ~64x. Allow generous noise headroom.
+    assert big < max(small, 1e-4) * 24, f"{unit!r}: {small:.4f}s -> {big:.4f}s"
+
+
+def test_escaped_angle_brackets_in_cells_and_items_are_not_eaten() -> None:
+    html = (
+        "<table><tr><th>Name</th><th>ID</th></tr>"
+        "<tr><td><b>Humidity Normal (&lt;61)</b></td><td><code>automation.kids</code></td></tr>"
+        "<tr><td><b>Humidity Normal (&lt;59)</b></td><td><code>automation.main</code></td></tr></table>"
+        "<ul><li>Use &lt;container&gt; name</li><li>RAM (<b>&lt; 2 ms</b>)</li></ul>"
+        "<h2>Range &lt;-&gt; mapping</h2>"
+    )
+    md = upnote_api.html_to_markdown(html)
+    assert "| **Humidity Normal (<61)** | `automation.kids` |" in md
+    assert "| **Humidity Normal (<59)** | `automation.main` |" in md
+    assert "- Use <container> name" in md
+    assert "- RAM (**< 2 ms**)" in md
+    assert "## Range <-> mapping" in md
+
+
+def test_literal_entity_text_is_not_double_decoded() -> None:
+    md = upnote_api.html_to_markdown("<ul><li>Settings &amp;gt; System</li></ul><div>a &amp;lt; b</div>")
+    assert "- Settings &gt; System" in md
+    assert "a &lt; b" in md
+
+
+def test_nested_lists_sibling_and_child_forms() -> None:
+    html = (
+        "<ol><li><b>Erik Bed Speaker</b>:</li>"
+        "<ul><li>Wrong Wi-Fi</li><li>detail two</li></ul>"
+        "<li>Second</li></ol>"
+        "<ul><li>parent<ul><li>child</li></ul></li><li>sibling</li></ul>"
+        '<ul><li data-checked="true">done</li><li data-checked="false">todo</li></ul>'
+    )
+    md = upnote_api.html_to_markdown(html)
+    assert "1. **Erik Bed Speaker**:\n   - Wrong Wi-Fi\n   - detail two\n2. Second" in md
+    assert "- parent\n  - child\n- sibling" in md
+    assert "- [x] done\n- [ ] todo" in md
+
+
+def test_raw_angle_brackets_inside_attribute_values() -> None:
+    html = '<div>Notify <a href="mailto:<b137@teams.ms>" title="mailto:<b137@teams.ms>">here</a></div>'
+    assert upnote_api.html_to_markdown(html) == "Notify [here](mailto:<b137@teams.ms>)"
+
+
+def test_block_tags_inside_cells_separate_words_and_br_in_code() -> None:
+    html = (
+        "<table><tr><td><div>Find:</div><ul><li>Attachments</li><li>Inline images</li></ul></td>"
+        "<td>B</td></tr></table><div><code>sh<br>1 then<br>4</code></div>"
+    )
+    md = upnote_api.html_to_markdown(html)
+    assert "| Find: • Attachments • Inline images | B |" in md
+    assert "`sh 1 then 4`" in md
+
+
+def test_placeholder_lookalike_text_and_pre_inside_code() -> None:
+    md = upnote_api.html_to_markdown(
+        "<div>literal @@CODE_SPAN_0@@ and @@PRE_BLOCK_0@@</div><div><code>x</code></div>"
+    )
+    assert "literal @@CODE_SPAN_0@@ and @@PRE_BLOCK_0@@" in md
+    assert "`x`" in md
+    md2 = upnote_api.html_to_markdown("<code>a<pre>b</pre>c</code>")
+    assert "@@" not in md2
+
+
+# --- Release signing (v0.2.5) -------------------------------------------------------------
+
+import shutil as _shutil  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+_needs_ssh_keygen = pytest.mark.skipif(_shutil.which("ssh-keygen") is None, reason="ssh-keygen missing")
+
+
+def _make_key(tmp_path: Path, name: str) -> tuple[Path, str]:
+    key = tmp_path / name
+    _subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", str(key)], check=True
+    )
+    return key, (tmp_path / f"{name}.pub").read_text().strip()
+
+
+def _sign(key: Path, data_file: Path, namespace: str = "upnote-api-release") -> str:
+    sig = Path(str(data_file) + ".sig")
+    sig.unlink(missing_ok=True)
+    _subprocess.run(
+        ["ssh-keygen", "-Y", "sign", "-f", str(key), "-n", namespace, str(data_file)],
+        check=True,
+        capture_output=True,
+    )
+    return sig.read_text()
+
+
+@_needs_ssh_keygen
+def test_verify_release_signature(tmp_path: Path) -> None:
+    key, pub = _make_key(tmp_path, "trusted")
+    other_key, _ = _make_key(tmp_path, "attacker")
+    data = tmp_path / "release.tar.gz"
+    data.write_bytes(b"genuine release bytes")
+    good_sig = _sign(key, data)
+
+    upnote_api.verify_release_signature(data.read_bytes(), good_sig, signers=(pub,))
+    with pytest.raises(RuntimeError, match="FAILED"):
+        upnote_api.verify_release_signature(b"tampered release bytes", good_sig, signers=(pub,))
+    with pytest.raises(RuntimeError, match="FAILED"):
+        upnote_api.verify_release_signature(data.read_bytes(), _sign(other_key, data), signers=(pub,))
+    with pytest.raises(RuntimeError, match="FAILED"):  # signature made for another purpose
+        upnote_api.verify_release_signature(
+            data.read_bytes(), _sign(key, data, namespace="file"), signers=(pub,)
+        )
+    with pytest.raises(RuntimeError, match="malformed"):
+        upnote_api.verify_release_signature(data.read_bytes(), "not a signature", signers=(pub,))
+
+
+def test_api_and_cli_trust_the_same_release_keys() -> None:
+    spec = importlib.util.spec_from_file_location("upnote_cli", REPO_ROOT / "src" / "upnote_cli.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli.TRUSTED_RELEASE_SIGNERS == upnote_api.TRUSTED_RELEASE_SIGNERS
+    assert cli.RELEASE_SIGNING_NAMESPACE == upnote_api.RELEASE_SIGNING_NAMESPACE
+    assert all(k.startswith("ssh-ed25519 ") for k in upnote_api.TRUSTED_RELEASE_SIGNERS)
+
+
+def _fake_release(monkeypatch: pytest.MonkeyPatch, archive: bytes, sha_text: str, sig_text: str | None) -> None:
+    prefix = upnote_api.ALLOWED_DOWNLOAD_PREFIX + "v99.0.0/"
+    info = upnote_api.UpdateCheckOut(
+        latest_version="99.0.0",
+        update_available=True,
+        download_url=prefix + "upnote-api.tar.gz",
+        sha256_url=prefix + "upnote-api.tar.gz.sha256",
+        sig_url=(prefix + "upnote-api.tar.gz.sig") if sig_text is not None else None,
+    )
+    monkeypatch.setattr(upnote_api, "check_for_updates", lambda timeout=15.0: info)
+    bodies = {info.download_url: archive, info.sha256_url: sha_text.encode()}
+    if sig_text is not None:
+        bodies[info.sig_url] = sig_text.encode()
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):  # noqa: D105
+            return self
+
+        def __exit__(self, *a):  # noqa: D105
+            return False
+
+    monkeypatch.setattr(
+        upnote_api.urllib.request, "urlopen", lambda req, **k: _Resp(bodies[req.full_url])
+    )
+    monkeypatch.setattr(upnote_api, "REQUIRE_UPDATE_CHECKSUM", True)
+    monkeypatch.setattr(upnote_api, "REQUIRE_UPDATE_SIGNATURE", True)
+
+
+def test_self_update_refuses_unsigned_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = b"archive"
+    _fake_release(monkeypatch, archive, hashlib.sha256(archive).hexdigest(), sig_text=None)
+    with pytest.raises(RuntimeError, match=r"missing a trusted \.tar\.gz\.sig"):
+        upnote_api.install_update_from_github(restart_service=False)
+
+
+@_needs_ssh_keygen
+def test_self_update_refuses_release_signed_by_untrusted_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attacker_key, _ = _make_key(tmp_path, "attacker")
+    data = tmp_path / "upnote-api.tar.gz"
+    data.write_bytes(b"malicious archive with a matching checksum")
+    sig = _sign(attacker_key, data)
+    _fake_release(monkeypatch, data.read_bytes(), hashlib.sha256(data.read_bytes()).hexdigest(), sig)
+    with pytest.raises(RuntimeError, match="FAILED"):
+        upnote_api.install_update_from_github(restart_service=False)
