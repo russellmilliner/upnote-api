@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import html as html_mod
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -33,15 +35,18 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 APP_VERSION = "0.2.2"
 GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+ALLOWED_DOWNLOAD_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 UPDATE_CHECK_INTERVAL_SECONDS = 6 * 3600
+MAX_DEEPLINK_BYTES = 120_000
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -67,6 +72,15 @@ LAUNCH_SCRIPT_PATH = Path(
 )
 API_HOST = os.environ.get("UPNOTE_API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("UPNOTE_API_PORT", "8765"))
+API_TOKEN = os.environ.get("UPNOTE_API_TOKEN", "").strip()
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "UPNOTE_CORS_ORIGINS",
+        f"http://127.0.0.1:{API_PORT},http://localhost:{API_PORT}",
+    ).split(",")
+    if o.strip()
+]
 
 # Lock to serialize deep-link dispatches so rapid concurrent creations can be
 # matched deterministically in SQLite.
@@ -248,6 +262,7 @@ class UpdateCheckOut(BaseModel):
     update_available: bool = False
     release_url: str = GITHUB_RELEASES_PAGE_URL
     download_url: str | None = None
+    sha256_url: str | None = None
     release_notes: str = ""
     checked_at: float | None = None
 
@@ -313,12 +328,14 @@ def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
     html_url = str(data.get("html_url") or GITHUB_RELEASES_PAGE_URL)
     body = str(data.get("body") or "")
     download_url: str | None = None
+    sha256_url: str | None = None
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         burl = str(asset.get("browser_download_url") or "")
         if name.endswith(".tar.gz") and burl:
             download_url = burl
-            break
+        elif name.endswith(".tar.gz.sha256") and burl:
+            sha256_url = burl
 
     info = UpdateCheckOut(
         current_version=APP_VERSION,
@@ -326,6 +343,7 @@ def check_for_updates(timeout: float = 10.0) -> UpdateCheckOut:
         update_available=is_newer_version(APP_VERSION, latest_version),
         release_url=html_url,
         download_url=download_url,
+        sha256_url=sha256_url,
         release_notes=body,
         checked_at=time.time(),
     )
@@ -350,7 +368,7 @@ def _background_update_check_loop() -> None:
 
 
 def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut:
-    """Download and install the latest GitHub release archive."""
+    """Download, verify, and install the latest GitHub release archive."""
     info = check_for_updates(timeout=15.0)
     if not info.update_available:
         return UpdateInstallOut(
@@ -362,6 +380,10 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
         )
     if not info.download_url:
         raise RuntimeError(f"No .tar.gz release asset found at {info.release_url}")
+    if not info.download_url.startswith(ALLOWED_DOWNLOAD_PREFIX):
+        raise RuntimeError(
+            f"Refusing untrusted download URL outside {ALLOWED_DOWNLOAD_PREFIX}: {info.download_url}"
+        )
 
     with tempfile.TemporaryDirectory(prefix="upnote-api-update-") as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -372,18 +394,36 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
             method="GET",
         )
         with urllib.request.urlopen(req, timeout=60.0) as resp:
-            archive_path.write_bytes(resp.read())
+            archive_bytes = resp.read()
+            archive_path.write_bytes(archive_bytes)
+
+        if info.sha256_url and info.sha256_url.startswith(ALLOWED_DOWNLOAD_PREFIX):
+            sha_req = urllib.request.Request(
+                info.sha256_url,
+                headers={"User-Agent": f"upnote-api/{APP_VERSION}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(sha_req, timeout=15.0) as sha_resp:
+                expected_sha = sha_resp.read().decode("utf-8").strip().split()[0].lower()
+            actual_sha = hashlib.sha256(archive_bytes).hexdigest().lower()
+            if not secrets.compare_digest(expected_sha, actual_sha):
+                raise RuntimeError(
+                    f"SHA-256 checksum mismatch for release archive (expected {expected_sha}, got {actual_sha})"
+                )
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=tmp_path)
+            tar.extractall(path=tmp_path, filter="data")
 
         install_dir = Path.home() / ".local" / "share" / "upnote-api"
+        mcp_dir = Path.home() / ".local" / "share" / "agy-mcp"
         bin_dir = Path.home() / ".local" / "bin"
         install_dir.mkdir(parents=True, exist_ok=True)
+        mcp_dir.mkdir(parents=True, exist_ok=True)
         bin_dir.mkdir(parents=True, exist_ok=True)
 
         extracted_api = list(tmp_path.glob("**/src/upnote_api.py"))
         extracted_cli = list(tmp_path.glob("**/src/upnote_cli.py"))
+        extracted_mcp = list(tmp_path.glob("**/src/upnote_mcp.py"))
         if not extracted_api or not extracted_cli:
             raise RuntimeError("Release archive is missing src/upnote_api.py or src/upnote_cli.py")
 
@@ -393,6 +433,15 @@ def install_update_from_github(restart_service: bool = True) -> UpdateInstallOut
         target_api.chmod(0o755)
         shutil.copy2(extracted_cli[0], target_cli)
         target_cli.chmod(0o755)
+
+        if extracted_mcp:
+            for mcp_target in (
+                install_dir / "upnote_mcp.py",
+                mcp_dir / "upnote_mcp.py",
+                bin_dir / "upnote-mcp",
+            ):
+                shutil.copy2(extracted_mcp[0], mcp_target)
+                mcp_target.chmod(0o755)
 
         if restart_service:
             subprocess.Popen(
@@ -437,17 +486,38 @@ _CACHED_UPNOTE_PROC: tuple[int, str, dict[str, str]] | None = None
 
 def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
     """
-    Locate the running UpNote AppImage / Electron process, its mounted binary,
-    and its desktop session environment variables.
+    Locate the running UpNote AppImage / Electron process owned by the current UID,
+    its mounted binary (also verified to be owned by the current UID), and its
+    desktop session environment variables.
     """
     global _CACHED_UPNOTE_PROC
+    uid = os.getuid()
     if _CACHED_UPNOTE_PROC is not None:
         cpid, cbin, cenv = _CACHED_UPNOTE_PROC
-        if Path(f"/proc/{cpid}").exists() and Path(cbin).exists():
-            return cpid, cbin, cenv
+        proc_path = Path(f"/proc/{cpid}")
+        bin_path = Path(cbin)
+        try:
+            if (
+                proc_path.exists()
+                and proc_path.stat().st_uid == uid
+                and bin_path.exists()
+                and bin_path.stat().st_uid == uid
+            ):
+                return cpid, cbin, cenv
+        except OSError:
+            pass
 
-    mounted_bins = sorted(glob.glob("/tmp/.mount_upnote*/upnote"))
-    binary_path = mounted_bins[-1] if mounted_bins else (
+    owned_mounts: list[str] = []
+    for candidate in sorted(glob.glob("/tmp/.mount_upnote*/upnote")):
+        try:
+            st = Path(candidate).stat()
+            parent_st = Path(candidate).parent.stat()
+            if st.st_uid == uid and parent_st.st_uid == uid:
+                owned_mounts.append(candidate)
+        except OSError:
+            continue
+
+    binary_path = owned_mounts[-1] if owned_mounts else (
         str(APPIMAGE_PATH) if APPIMAGE_PATH.exists() else None
     )
 
@@ -459,6 +529,8 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
             continue
         pid = int(proc_dir.name)
         try:
+            if proc_dir.stat().st_uid != uid:
+                continue
             cmdline = (proc_dir / "cmdline").read_bytes().decode("utf-8", errors="ignore")
             if "upnote.appimage" in cmdline or "/.mount_upnote" in cmdline:
                 env_bytes = (proc_dir / "environ").read_bytes()
@@ -472,11 +544,10 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
                     session_env = env_map
                     if "upnote.appimage" in cmdline:
                         break
-        except (PermissionError, FileNotFoundError, ProcessLookupError):
+        except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
             continue
 
     if not session_env:
-        uid = os.getuid()
         for proc_dir in Path("/proc").iterdir():
             if not proc_dir.name.isdigit():
                 continue
@@ -492,7 +563,7 @@ def find_upnote_process() -> tuple[int | None, str | None, dict[str, str]]:
                 if "WAYLAND_DISPLAY" in env_map and "XAUTHORITY" in env_map:
                     session_env = env_map
                     break
-            except (PermissionError, FileNotFoundError, ProcessLookupError):
+            except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
                 continue
 
     if found_pid is not None and binary_path is not None:
@@ -545,6 +616,43 @@ def ensure_upnote_running() -> tuple[int, str, dict[str, str]]:
     )
 
 
+def sanitize_deeplink_url(url: str) -> str:
+    """
+    Validate that `url` uses the `upnote://` scheme and strip `x-success` / `x-error`
+    callback parameters so callers cannot trigger Electron `shell.openExternal` on
+    external URLs.
+    """
+    if not url.startswith("upnote://"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Deep-link URL must start with 'upnote://'.",
+        )
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.query:
+        return url
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    filtered = [
+        (k, v)
+        for k, v in pairs
+        if k.lower() not in ("x-success", "x-error", "x-cancel")
+    ]
+    if len(filtered) == len(pairs):
+        return url
+    new_query = urllib.parse.urlencode(filtered, quote_via=urllib.parse.quote)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment)
+    )
+
+
+def build_deeplink_url(url: str, background: bool = True) -> str:
+    """Sanitize an `upnote://` URL and append `_bg_new_window=true` when `background=True`."""
+    clean_url = sanitize_deeplink_url(url)
+    if background and "new_window=true" not in clean_url.lower():
+        sep = "&" if "?" in clean_url else "?"
+        clean_url = f"{clean_url}{sep}_bg_new_window=true"
+    return clean_url
+
+
 def dispatch_deeplink(url: str, background: bool = True) -> None:
     """
     Invoke UpNote with an upnote://x-callback-url/... deep link.
@@ -559,9 +667,16 @@ def dispatch_deeplink(url: str, background: bool = True) -> None:
     (preventing UpNote from popping up or stealing desktop focus) without opening
     a secondary note window.
     """
-    if background and "new_window=true" not in url.lower():
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}_bg_new_window=true"
+    final_url = build_deeplink_url(url, background=background)
+    encoded_len = len(final_url.encode("utf-8"))
+    if encoded_len > MAX_DEEPLINK_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=(
+                f"Encoded deep-link URL size ({encoded_len} bytes) exceeds Linux "
+                f"MAX_ARG_STRLEN safe limit ({MAX_DEEPLINK_BYTES} bytes)."
+            ),
+        )
 
     _, binary, env = ensure_upnote_running()
     exec_env = os.environ.copy()
@@ -572,14 +687,14 @@ def dispatch_deeplink(url: str, background: bool = True) -> None:
     )
     try:
         subprocess.run(
-            [binary, url],
+            [binary, final_url],
             env=exec_env,
             capture_output=True,
             text=True,
             timeout=15,
             check=True,
         )
-    except subprocess.SubprocessError as exc:
+    except (subprocess.SubprocessError, OSError) as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to dispatch deep link to UpNote: {exc}",
@@ -728,9 +843,11 @@ def resolve_notebook(
     conn: sqlite3.Connection,
     notebook_query: str,
     space_id: str | None = None,
+    notebooks_by_id: dict[str, NotebookOut] | None = None,
 ) -> NotebookOut | None:
     """Find a notebook by UUID, exact title, or slash-separated path."""
-    notebooks_by_id, _ = load_notebooks_index(conn)
+    if notebooks_by_id is None:
+        notebooks_by_id, _ = load_notebooks_index(conn)
     q = notebook_query.strip()
     if q in notebooks_by_id:
         return notebooks_by_id[q]
@@ -742,6 +859,11 @@ def resolve_notebook(
         if nb.path.lower() == q_lower or nb.title.lower() == q_lower:
             return nb
     return None
+
+
+def _escape_like(term: str) -> str:
+    """Escape SQLite LIKE wildcards ('%', '_', '\\') for literal substring searches."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def row_to_note_out(
@@ -850,15 +972,26 @@ def html_to_markdown(raw_html: str | None, title: str = "") -> str:
 
     s = re.sub(r"<pre(\s[^>]*)?>(.*?)</pre>", _replace_pre, s, flags=re.I | re.S)
 
+    # Tokenize inline <code>...</code> spans before tag stripping or HTML unescaping so
+    # escaped HTML tags (e.g. `<code>&lt;div&gt;</code>`) or `*` / `_` inside inline code
+    # are never stripped or turned into bold/italic Markdown.
+    code_spans: list[str] = []
+
+    def _replace_code_span(m: re.Match[str]) -> str:
+        inner = re.sub(r"<[^>]+>", "", m.group(1) or "")
+        inner_unescaped = html_mod.unescape(inner).replace("\xa0", " ")
+        idx = len(code_spans)
+        if "`" in inner_unescaped:
+            code_spans.append(f"`` {inner_unescaped} ``")
+        else:
+            code_spans.append(f"`{inner_unescaped}`")
+        return f"@@CODE_SPAN_{idx}@@"
+
+    s = re.sub(r"<code\b[^>]*>(.*?)</code>", _replace_code_span, s, flags=re.I | re.S)
+
     def _clean_inline(fragment: str) -> str:
         f = fragment
         f = re.sub(r"<br\s*/?>", " ", f, flags=re.I)
-        f = re.sub(
-            r"<code\b[^>]*>(.*?)</code>",
-            lambda m: "`" + html_mod.unescape(re.sub(r"<[^>]+>", "", m.group(1))) + "`",
-            f,
-            flags=re.I | re.S,
-        )
         f = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f, flags=re.I | re.S)
         f = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", f, flags=re.I | re.S)
         f = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", f, flags=re.I | re.S)
@@ -941,12 +1074,6 @@ def html_to_markdown(raw_html: str | None, title: str = "") -> str:
     s = re.sub(r"</(div|p)>", "\n\n", s, flags=re.I)
     s = re.sub(r"<(div|p)\b[^>]*>", "", s, flags=re.I)
 
-    s = re.sub(
-        r"<code\b[^>]*>(.*?)</code>",
-        lambda m: "`" + html_mod.unescape(re.sub(r"<[^>]+>", "", m.group(1))) + "`",
-        s,
-        flags=re.I | re.S,
-    )
     s = re.sub(r"<(b|strong)\b[^>]*>(.*?)</\1>", r"**\2**", f"{s}", flags=re.I | re.S)
     s = re.sub(r"<(i|em)\b[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
     s = re.sub(r"<(strike|s)\b[^>]*>(.*?)</\1>", r"~~\2~~", s, flags=re.I | re.S)
@@ -966,6 +1093,8 @@ def html_to_markdown(raw_html: str | None, title: str = "") -> str:
     s = re.sub(r"<[^>]+>", "", s)
     s = html_mod.unescape(s).replace("\xa0", " ")
 
+    for idx, span in enumerate(code_spans):
+        s = s.replace(f"@@CODE_SPAN_{idx}@@", span)
     for idx, block in enumerate(pre_blocks):
         s = s.replace(f"@@PRE_BLOCK_{idx}@@", block)
 
@@ -1035,12 +1164,15 @@ def create_note_via_upnote(req: NoteCreateRequest) -> NoteOut:
             time.sleep(0.05)
             with get_db_connection(readonly=True) as conn:
                 rows = conn.execute(
-                    "SELECT id FROM notes ORDER BY createdAt DESC LIMIT 5"
+                    "SELECT id, title FROM notes ORDER BY createdAt DESC LIMIT 10"
                 ).fetchall()
-                for r in rows:
-                    if r["id"] not in before_ids:
+                new_rows = [r for r in rows if r["id"] not in before_ids]
+                for r in new_rows:
+                    if (r["title"] or "").replace("\xa0", " ").strip() == clean_title:
                         created_id = r["id"]
                         break
+                if not created_id and new_rows:
+                    created_id = new_rows[0]["id"]
                 if created_id:
                     break
 
@@ -1132,10 +1264,28 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
+
+
+@app.middleware("http")
+async def _optional_token_auth(request: Request, call_next: Any) -> Any:
+    if not API_TOKEN or request.url.path in ("/health", "/docs", "/redoc", "/openapi.json"):
+        return await call_next(request)
+    auth_header = request.headers.get("Authorization", "")
+    candidate = ""
+    if auth_header.lower().startswith("bearer "):
+        candidate = auth_header[7:].strip()
+    else:
+        candidate = request.headers.get("X-API-Key", "").strip()
+    if not candidate or not secrets.compare_digest(candidate, API_TOKEN):
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Invalid or missing API token."},
+        )
+    return await call_next(request)
 
 
 @app.get("/health", response_model=StatusOut, tags=["System"], summary="Health check")
@@ -1240,12 +1390,7 @@ def launch_upnote_app() -> StatusOut:
 def open_in_upnote_ui(req: DeepLinkOpenRequest) -> dict[str, Any]:
     """Open a note, notebook, tag, or custom x-callback-url in the UpNote UI."""
     if req.url:
-        if not req.url.startswith("upnote://"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="URL must start with 'upnote://'",
-            )
-        url = req.url
+        url = sanitize_deeplink_url(req.url)
     elif req.note_id:
         url = f"upnote://x-callback-url/openNote?noteId={urllib.parse.quote(req.note_id)}"
     elif req.notebook_id:
@@ -1407,27 +1552,34 @@ def list_notebook_notes(
         target_space_id: str | None = None
         if space:
             target_space_id, _, _ = resolve_space(conn, space)
-        nb = resolve_notebook(conn, notebook, space_id=target_space_id)
+        notebooks_by_id, note_to_notebooks = load_notebooks_index(conn)
+        nb = resolve_notebook(
+            conn, notebook, space_id=target_space_id, notebooks_by_id=notebooks_by_id
+        )
         if not nb:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Notebook '{notebook}' not found.",
             )
+        if not nb.note_ids:
+            return []
         spaces_map = load_spaces_map(conn)
-        _, note_to_notebooks = load_notebooks_index(conn)
-        notes_out: list[NoteOut] = []
-        for nid in nb.note_ids:
-            row = conn.execute(
-                "SELECT * FROM notes WHERE id = ? AND deleted = 0 AND trashed = 0",
-                (nid,),
-            ).fetchone()
-            if row:
-                notes_out.append(
-                    row_to_note_out(
-                        row, spaces_map, note_to_notebooks, include_content=include_content
-                    )
-                )
-        return notes_out
+        placeholders = ",".join("?" for _ in nb.note_ids)
+        rows = conn.execute(
+            f"SELECT * FROM notes WHERE id IN ({placeholders}) AND deleted = 0 AND trashed = 0",
+            nb.note_ids,
+        ).fetchall()
+        rows_by_id = {r["id"]: r for r in rows}
+        return [
+            row_to_note_out(
+                rows_by_id[nid],
+                spaces_map,
+                note_to_notebooks,
+                include_content=include_content,
+            )
+            for nid in nb.note_ids
+            if nid in rows_by_id
+        ]
 
 
 @app.post(
@@ -1583,7 +1735,7 @@ def list_notes(
     """Search and filter notes across spaces, notebooks, and tags."""
     with get_db_connection(readonly=True) as conn:
         spaces_map = load_spaces_map(conn)
-        _, note_to_notebooks = load_notebooks_index(conn)
+        notebooks_by_id, note_to_notebooks = load_notebooks_index(conn)
 
         clauses = ["deleted = 0", "trashed = ?"]
         params: list[Any] = [1 if trashed else 0]
@@ -1598,7 +1750,9 @@ def list_notes(
                 params.append(sqlite_space_val)
 
         if notebook:
-            nb = resolve_notebook(conn, notebook, space_id=target_space_id)
+            nb = resolve_notebook(
+                conn, notebook, space_id=target_space_id, notebooks_by_id=notebooks_by_id
+            )
             if not nb or not nb.note_ids:
                 return []
             placeholders = ",".join("?" for _ in nb.note_ids)
@@ -1622,24 +1776,33 @@ def list_notes(
             params.append(0 if unsynced else 1)
 
         if q:
-            clauses.append("(title LIKE ? OR text LIKE ?)")
-            like_q = f"%{q}%"
+            clauses.append("(title LIKE ? ESCAPE '\\' OR text LIKE ? ESCAPE '\\')")
+            like_q = f"%{_escape_like(q)}%"
             params.extend([like_q, like_q])
 
         sql = f"SELECT * FROM notes WHERE {' AND '.join(clauses)} ORDER BY pinned DESC, updatedAt DESC"
         rows = conn.execute(sql, params).fetchall()
 
         norm_tag = normalize_tag_name(tag).lower() if tag else None
-        results: list[NoteOut] = []
-        for r in rows:
-            note_out = row_to_note_out(
+        if norm_tag:
+            filtered_rows: list[sqlite3.Row] = []
+            for r in rows:
+                try:
+                    raw_tags = json.loads(r["tagLinks"] or "[]")
+                    tags_lower = [str(t).lower() for t in raw_tags] if isinstance(raw_tags, list) else []
+                except json.JSONDecodeError:
+                    tags_lower = []
+                if norm_tag in tags_lower:
+                    filtered_rows.append(r)
+            rows = filtered_rows
+
+        sliced_rows = rows[offset : offset + limit]
+        return [
+            row_to_note_out(
                 r, spaces_map, note_to_notebooks, include_content=include_content
             )
-            if norm_tag and norm_tag not in [t.lower() for t in note_out.tags]:
-                continue
-            results.append(note_out)
-
-        return results[offset : offset + limit]
+            for r in sliced_rows
+        ]
 
 
 @app.get("/api/v1/notes/{note_id_or_title}", response_model=NoteOut, tags=["Notes"], summary="Get a single note by UUID or exact title")
@@ -1660,8 +1823,9 @@ def get_note(
         if row:
             if row["trashed"] == 1 and row["title"]:
                 active_replacement = conn.execute(
-                    "SELECT * FROM notes WHERE title = ? AND trashed = 0 AND deleted = 0 ORDER BY updatedAt DESC LIMIT 1",
-                    (row["title"],),
+                    "SELECT * FROM notes WHERE title = ? AND COALESCE(space, '') = COALESCE(?, '') "
+                    "AND trashed = 0 AND deleted = 0 ORDER BY updatedAt DESC LIMIT 1",
+                    (row["title"], row["space"]),
                 ).fetchone()
                 if active_replacement:
                     row = active_replacement
@@ -1787,9 +1951,11 @@ def update_note(note_id: str, req: NoteUpdateRequest) -> NoteOut:
 
     ids_to_trash: list[str] = [existing.id]
     with get_db_connection(readonly=True) as conn:
+        _, target_sqlite_space, _ = resolve_space(conn, target_space)
         dup_rows = conn.execute(
-            "SELECT id FROM notes WHERE title = ? AND trashed = 0 AND deleted = 0 AND id != ?",
-            (target_title, new_note.id),
+            "SELECT id FROM notes WHERE title = ? AND COALESCE(space, '') = COALESCE(?, '') "
+            "AND trashed = 0 AND deleted = 0 AND id != ?",
+            (target_title, target_sqlite_space, new_note.id),
         ).fetchall()
         for dr in dup_rows:
             if dr["id"] not in ids_to_trash:
@@ -1914,8 +2080,8 @@ def list_files(
     with get_db_connection(readonly=True) as conn:
         if q:
             rows = conn.execute(
-                "SELECT * FROM files WHERE deleted = 0 AND name LIKE ? ORDER BY updatedAt DESC LIMIT ?",
-                (f"%{q}%", limit),
+                "SELECT * FROM files WHERE deleted = 0 AND name LIKE ? ESCAPE '\\' ORDER BY updatedAt DESC LIMIT ?",
+                (f"%{_escape_like(q)}%", limit),
             ).fetchall()
         else:
             rows = conn.execute(

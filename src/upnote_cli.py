@@ -6,8 +6,10 @@ CLI client for the local UpNote REST API service (http://127.0.0.1:8765).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -21,9 +23,11 @@ from typing import Any
 
 APP_VERSION = "0.2.2"
 BASE_URL = os.environ.get("UPNOTE_API_URL", "http://127.0.0.1:8765")
+API_TOKEN = os.environ.get("UPNOTE_API_TOKEN", "").strip()
 GITHUB_REPO = "russellmilliner/upnote-api"
 GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+ALLOWED_DOWNLOAD_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 
 
 def _parse_semver(version: str) -> tuple[int, int, int]:
@@ -55,12 +59,14 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
     html_url = str(data.get("html_url") or GITHUB_RELEASES_PAGE_URL)
     body = str(data.get("body") or "")
     download_url: str | None = None
+    sha256_url: str | None = None
     for asset in data.get("assets") or []:
         name = str(asset.get("name") or "")
         burl = str(asset.get("browser_download_url") or "")
         if name.endswith(".tar.gz") and burl:
             download_url = burl
-            break
+        elif name.endswith(".tar.gz.sha256") and burl:
+            sha256_url = burl
 
     return {
         "current_version": APP_VERSION,
@@ -68,6 +74,7 @@ def check_github_release(timeout: float = 15.0) -> dict[str, Any]:
         "update_available": is_newer_version(APP_VERSION, latest_version),
         "release_url": html_url,
         "download_url": download_url,
+        "sha256_url": sha256_url,
         "release_notes": body,
     }
 
@@ -83,8 +90,13 @@ def self_update_from_github() -> dict[str, Any]:
             "message": f"Already up to date (v{APP_VERSION}).",
         }
     download_url = info.get("download_url")
+    sha256_url = info.get("sha256_url")
     if not download_url:
         raise RuntimeError(f"No .tar.gz release asset found at {info['release_url']}")
+    if not str(download_url).startswith(ALLOWED_DOWNLOAD_PREFIX):
+        raise RuntimeError(
+            f"Refusing untrusted download URL outside {ALLOWED_DOWNLOAD_PREFIX}: {download_url}"
+        )
 
     with tempfile.TemporaryDirectory(prefix="upnote-cli-update-") as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -95,18 +107,36 @@ def self_update_from_github() -> dict[str, Any]:
             method="GET",
         )
         with urllib.request.urlopen(req, timeout=60.0) as resp:
-            archive_path.write_bytes(resp.read())
+            archive_bytes = resp.read()
+            archive_path.write_bytes(archive_bytes)
+
+        if sha256_url and str(sha256_url).startswith(ALLOWED_DOWNLOAD_PREFIX):
+            sha_req = urllib.request.Request(
+                sha256_url,
+                headers={"User-Agent": f"upnote-cli/{APP_VERSION}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(sha_req, timeout=15.0) as sha_resp:
+                expected_sha = sha_resp.read().decode("utf-8").strip().split()[0].lower()
+            actual_sha = hashlib.sha256(archive_bytes).hexdigest().lower()
+            if not secrets.compare_digest(expected_sha, actual_sha):
+                raise RuntimeError(
+                    f"SHA-256 checksum mismatch for release archive (expected {expected_sha}, got {actual_sha})"
+                )
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=tmp_path)
+            tar.extractall(path=tmp_path, filter="data")
 
         install_dir = Path.home() / ".local" / "share" / "upnote-api"
+        mcp_dir = Path.home() / ".local" / "share" / "agy-mcp"
         bin_dir = Path.home() / ".local" / "bin"
         install_dir.mkdir(parents=True, exist_ok=True)
+        mcp_dir.mkdir(parents=True, exist_ok=True)
         bin_dir.mkdir(parents=True, exist_ok=True)
 
         extracted_api = list(tmp_path.glob("**/src/upnote_api.py"))
         extracted_cli = list(tmp_path.glob("**/src/upnote_cli.py"))
+        extracted_mcp = list(tmp_path.glob("**/src/upnote_mcp.py"))
         if not extracted_api or not extracted_cli:
             raise RuntimeError("Release archive is missing src/upnote_api.py or src/upnote_cli.py")
 
@@ -116,6 +146,15 @@ def self_update_from_github() -> dict[str, Any]:
         target_api.chmod(0o755)
         shutil.copy2(extracted_cli[0], target_cli)
         target_cli.chmod(0o755)
+
+        if extracted_mcp:
+            for mcp_target in (
+                install_dir / "upnote_mcp.py",
+                mcp_dir / "upnote_mcp.py",
+                bin_dir / "upnote-mcp",
+            ):
+                shutil.copy2(extracted_mcp[0], mcp_target)
+                mcp_target.chmod(0o755)
 
         subprocess.run(
             ["systemctl", "--user", "restart", "upnote-api.service"],
@@ -127,7 +166,7 @@ def self_update_from_github() -> dict[str, Any]:
         "previous_version": APP_VERSION,
         "installed_version": info["latest_version"],
         "release_url": info["release_url"],
-        "message": f"Installed UpNote REST API & CLI v{info['latest_version']} and restarted upnote-api.service.",
+        "message": f"Installed UpNote REST API, MCP & CLI v{info['latest_version']} and restarted upnote-api.service.",
     }
 
 
@@ -145,6 +184,8 @@ def api_request(
 
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Accept": "application/json"}
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
     if data is not None:
         headers["Content-Type"] = "application/json"
 

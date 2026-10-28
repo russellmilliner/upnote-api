@@ -14,8 +14,13 @@ from typing import Any
 import requests
 from mcp.server.mcpserver import MCPServer
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.2"
 UPNOTE_API_URL = os.getenv("UPNOTE_API_URL", "http://127.0.0.1:8765").rstrip("/")
+UPNOTE_API_TOKEN = os.getenv("UPNOTE_API_TOKEN", "").strip()
+
+_SESSION = requests.Session()
+if UPNOTE_API_TOKEN:
+    _SESSION.headers["Authorization"] = f"Bearer {UPNOTE_API_TOKEN}"
 
 mcp = MCPServer("upnote")
 
@@ -40,7 +45,7 @@ def _clean_note_summary(n: dict[str, Any], include_content: bool = False) -> dic
 @mcp.tool()
 def upnote_status() -> dict[str, Any]:
     """Get UpNote API service status, running UpNote Electron PID, and SQLite database counts."""
-    r = requests.get(f"{UPNOTE_API_URL}/api/v1/status", timeout=10)
+    r = _SESSION.get(f"{UPNOTE_API_URL}/api/v1/status", timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -48,7 +53,7 @@ def upnote_status() -> dict[str, Any]:
 @mcp.tool()
 def upnote_list_spaces() -> list[dict[str, Any]]:
     """List all UpNote workspaces (e.g., 'General', 'CHEP') and their note/notebook counts."""
-    r = requests.get(f"{UPNOTE_API_URL}/api/v1/spaces", timeout=10)
+    r = _SESSION.get(f"{UPNOTE_API_URL}/api/v1/spaces", timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -59,7 +64,7 @@ def upnote_list_notebooks(space: str = "General", query: str = "") -> list[dict[
     params: dict[str, Any] = {"space": space}
     if query:
         params["q"] = query
-    r = requests.get(f"{UPNOTE_API_URL}/api/v1/notebooks", params=params, timeout=10)
+    r = _SESSION.get(f"{UPNOTE_API_URL}/api/v1/notebooks", params=params, timeout=10)
     r.raise_for_status()
     return [
         {
@@ -78,7 +83,7 @@ def upnote_list_tags(space: str = "General", query: str = "") -> list[dict[str, 
     params: dict[str, Any] = {"space": space}
     if query:
         params["q"] = query
-    r = requests.get(f"{UPNOTE_API_URL}/api/v1/tags", params=params, timeout=10)
+    r = _SESSION.get(f"{UPNOTE_API_URL}/api/v1/tags", params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 
@@ -102,7 +107,7 @@ def upnote_search_notes(
         params["notebook"] = notebook
     if tag:
         params["tag"] = tag.lstrip("#")
-    r = requests.get(f"{UPNOTE_API_URL}/api/v1/notes", params=params, timeout=15)
+    r = _SESSION.get(f"{UPNOTE_API_URL}/api/v1/notes", params=params, timeout=15)
     r.raise_for_status()
     return [_clean_note_summary(n, include_content=include_content) for n in r.json()]
 
@@ -110,7 +115,7 @@ def upnote_search_notes(
 @mcp.tool()
 def upnote_get_note(note_id_or_title: str, space: str = "General") -> dict[str, Any]:
     """Retrieve the full Markdown text and metadata of a single UpNote note by UUID or exact title."""
-    r = requests.get(
+    r = _SESSION.get(
         f"{UPNOTE_API_URL}/api/v1/notes/{requests.utils.quote(note_id_or_title, safe='')}",
         params={"space": space},
         timeout=15,
@@ -136,7 +141,7 @@ def upnote_create_note(
         "markdown": True,
         "text": text,
     }
-    r = requests.post(f"{UPNOTE_API_URL}/api/v1/notes", json=payload, timeout=30)
+    r = _SESSION.post(f"{UPNOTE_API_URL}/api/v1/notes", json=payload, timeout=30)
     r.raise_for_status()
     return _clean_note_summary(r.json(), include_content=False)
 
@@ -149,7 +154,7 @@ def upnote_update_note_safe(
     title: str = "",
     notebook: str = "",
     tags: list[str] | None = None,
-    space: str = "General",
+    space: str = "",
 ) -> dict[str, Any]:
     """Non-destructively update an existing UpNote note via cloud_replace.
 
@@ -157,9 +162,9 @@ def upnote_update_note_safe(
     If passing `full_replacement_markdown`, ensure you fetched the existing note first with `upnote_get_note`
     and merged all prior sections.
     """
-    curr_resp = requests.get(
+    curr_resp = _SESSION.get(
         f"{UPNOTE_API_URL}/api/v1/notes/{requests.utils.quote(note_id, safe='')}",
-        params={"space": space},
+        params={"space": space} if space else None,
         timeout=15,
     )
     curr_resp.raise_for_status()
@@ -183,16 +188,17 @@ def upnote_update_note_safe(
     notebooks_list = curr.get("notebooks") or []
     target_notebook = notebook or (notebooks_list[0].get("path") if notebooks_list else "AI")
     target_tags = [t.lstrip("#") for t in tags] if tags is not None else (curr.get("tags") or [])
+    target_space = space or curr.get("space_name") or "General"
 
     payload = {
         "title": title or existing_title,
-        "space": space,
+        "space": target_space,
         "notebook": target_notebook,
         "tags": target_tags,
         "strategy": "cloud_replace",
         "text": merged_text,
     }
-    r = requests.patch(
+    r = _SESSION.patch(
         f"{UPNOTE_API_URL}/api/v1/notes/{requests.utils.quote(curr['id'], safe='')}",
         json=payload,
         timeout=30,
@@ -204,7 +210,7 @@ def upnote_update_note_safe(
 @mcp.tool()
 def upnote_trash_note(note_id: str) -> dict[str, Any]:
     """Move an UpNote note to Trash by UUID."""
-    r = requests.delete(
+    r = _SESSION.delete(
         f"{UPNOTE_API_URL}/api/v1/notes/{requests.utils.quote(note_id, safe='')}",
         timeout=20,
     )
@@ -215,7 +221,7 @@ def upnote_trash_note(note_id: str) -> dict[str, Any]:
 @mcp.tool()
 def upnote_restore_note(note_id: str) -> dict[str, Any]:
     """Restore a trashed UpNote note by UUID."""
-    r = requests.post(
+    r = _SESSION.post(
         f"{UPNOTE_API_URL}/api/v1/notes/{requests.utils.quote(note_id, safe='')}/restore",
         timeout=20,
     )

@@ -165,6 +165,8 @@ journalctl --user -u upnote-api.service -f
 | `UPNOTE_APPIMAGE_PATH` | `~/AppImages/upnote.appimage` | Path to the UpNote AppImage binary |
 | `UPNOTE_LAUNCH_SCRIPT` | `~/.local/bin/upnotelaunch.sh` | Background launcher script if UpNote is not running |
 | `UPNOTE_API_URL` | `http://127.0.0.1:8765` | Base URL used by `upnote-cli` and `upnote-mcp` |
+| `UPNOTE_API_TOKEN` | *(empty — disabled)* | Optional bearer/API-key token (`Authorization: Bearer <token>` or `X-API-Key: <token>`) |
+| `UPNOTE_CORS_ORIGINS` | `http://127.0.0.1:8765,http://localhost:8765` | Comma-separated list of allowed CORS origins |
 
 ---
 
