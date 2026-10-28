@@ -1,7 +1,7 @@
 # UpNote Local Store, Deep-Link REST API & MCP Server (`upnote-api`)
 
-[![Version](https://img.shields.io/badge/Version-v0.2.1-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.1)
-[![Release Archive](https://img.shields.io/badge/Release-Download_v0.2.1-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.2.1/upnote-api-v0.2.1-linux-x86_64.tar.gz)
+[![Version](https://img.shields.io/badge/Version-v0.2.2-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.2)
+[![Release Archive](https://img.shields.io/badge/Release-Download_v0.2.2-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.2.2/upnote-api-v0.2.2-linux-x86_64.tar.gz)
 [![MCP Server](https://img.shields.io/badge/MCP-upnote--mcp-8b5cf6?style=for-the-badge&logo=anthropic&logoColor=white)](#-model-context-protocol-mcp-server-upnote-mcp)
 [![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1.0%20%2F%20Swagger-85ea2d?style=for-the-badge&logo=swagger&logoColor=black)](docs/SWAGGER.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Uvicorn-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)

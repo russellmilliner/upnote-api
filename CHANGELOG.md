@@ -2,6 +2,14 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.2](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.2) — 2026-10-28
+
+### Highlights
+- Prevent UpNote Electron window from popping up or stealing desktop focus during background API/MCP write operations (_bg_new_window=true and --auto-start-in-background)
+
+### Commits
+- fix(deeplink): prevent UpNote from stealing desktop focus during background API writes (fcb2118)
+
 ## [v0.2.1](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.1) — 2026-10-25
 
 ## [v0.2.0](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.0) — 2026-10-25
