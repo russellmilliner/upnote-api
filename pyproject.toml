@@ -16,7 +16,7 @@ keywords = ["upnote", "fastapi", "rest-api", "mcp", "model-context-protocol", "s
 dependencies = [
   "fastapi>=0.162.0",
   "uvicorn>=0.54.0",
-  "pydantic>=2.14.1",
+  "pydantic>=2.14.2",
   "mcp>=2.3.0",
   "requests>=2.34.2",
 ]
