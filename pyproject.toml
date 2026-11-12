@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["upnote", "fastapi", "rest-api", "mcp", "model-context-protocol", "sqlite", "notes", "linux", "systemd"]
 dependencies = [
-  "fastapi>=0.162.2",
+  "fastapi>=0.162.5",
   "uvicorn>=0.54.0",
   "pydantic>=2.14.3",
   "mcp>=2.3.0",
