@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "upnote-api"
-version = "0.2.5"
+version = "0.2.6"
 description = "Full REST API, Model Context Protocol (MCP) Server (upnote-mcp), and CLI (upnote-cli) for interacting with the local UpNote SQLite store and Electron x-callback-url deep-link interface on Linux."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["upnote", "fastapi", "rest-api", "mcp", "model-context-protocol", "sqlite", "notes", "linux", "systemd"]
 dependencies = [
-  "fastapi>=0.163.1",
+  "fastapi>=0.164.0",
   "uvicorn>=0.54.0",
   "pydantic>=2.14.3",
   "mcp>=2.3.0",

@@ -2,6 +2,28 @@
 
 All notable changes and bumped dependencies for `russellmilliner/upnote-api` are documented in this file.
 
+## [v0.2.6](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.6) — 2026-11-18
+
+### Highlights
+- Update dependencies: fastapi 0.164.0
+
+### Commits
+- chore(deps): update dependencies (fastapi 0.163.1) (e5c3f7d)
+- chore(deps): update dependencies (fastapi 0.162.7) (26d38e3)
+- chore(deps): update dependencies (fastapi 0.162.6) (1a00950)
+- chore(deps): update dependencies (fastapi 0.162.5) (8801840)
+- chore(deps): update dependencies (fastapi 0.162.2) (aea3034)
+- chore(deps): update dependencies (fastapi 0.162.1) (b375ed1)
+- chore(deps): update dependencies (pydantic 2.14.3) (6328d8a)
+- chore(deps): update dependencies (pydantic 2.14.2) (9d1129b)
+
+### 📦 Bumped Dependencies (2 packages)
+
+| Package | Previous | Updated | Scope |
+| :--- | :--- | :--- | :--- |
+| `fastapi` | `0.162.0` | **`0.164.0`** | Direct (`pyproject.toml`) |
+| `pydantic` | `2.14.1` | **`2.14.3`** | Direct (`pyproject.toml`) |
+
 ## [v0.2.5-deps](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.5-deps) — 2026-11-15
 
 ### 📦 Bumped Dependencies (1 package)

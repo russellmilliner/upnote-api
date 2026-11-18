@@ -1,7 +1,7 @@
 # UpNote Local Store, Deep-Link REST API & MCP Server (`upnote-api`)
 
-[![Version](https://img.shields.io/badge/Version-v0.2.5-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.5)
-[![Release Archive](https://img.shields.io/badge/Release-Download_v0.2.5-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.2.5/upnote-api-v0.2.5-linux-x86_64.tar.gz)
+[![Version](https://img.shields.io/badge/Version-v0.2.6-0284c7?style=for-the-badge&logo=github)](https://github.com/russellmilliner/upnote-api/releases/tag/v0.2.6)
+[![Release Archive](https://img.shields.io/badge/Release-Download_v0.2.6-10b981?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/russellmilliner/upnote-api/releases/download/v0.2.6/upnote-api-v0.2.6-linux-x86_64.tar.gz)
 [![MCP Server](https://img.shields.io/badge/MCP-upnote--mcp-8b5cf6?style=for-the-badge&logo=anthropic&logoColor=white)](#-model-context-protocol-mcp-server-upnote-mcp)
 [![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1.0%20%2F%20Swagger-85ea2d?style=for-the-badge&logo=swagger&logoColor=black)](docs/SWAGGER.md)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Uvicorn-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
@@ -194,7 +194,7 @@ Since the release published on 2026-10-28 that introduced signing, every release
 Verify a download manually:
 
 ```bash
-V=v0.2.5
+V=v0.2.6
 echo 'upnote-api-release namespaces="upnote-api-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEqeVYqm5foQl1HIoGKDRedTjh+FCQEmA6IC/Fv3tp9M' > allowed_signers
 ssh-keygen -Y verify -f allowed_signers -I upnote-api-release -n upnote-api-release \
   -s upnote-api-$V-linux-x86_64.tar.gz.sig < upnote-api-$V-linux-x86_64.tar.gz
